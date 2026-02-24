@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedaycode/tauri-schema/v2/schema.json",
+  "productName": "Music Relay",
+  "version": "0.1.0",
+  "identifier": "com.musicrelay.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Music Relay",
+        "width": 480,
+        "height": 360,
+        "resizable": true,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": false,
+      "tooltip": "Music Relay"
+    },
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https://api.spotify.com https://accounts.spotify.com wss://*; img-src 'self' https://i.scdn.co"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage", "msi"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libappindicator3-1"]
+      }
+    }
+  }
+}
