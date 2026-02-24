@@ -15,7 +15,8 @@
       {
         "title": "Music Relay",
         "width": 480,
-        "height": 360,
+        "height": 540,
+        "minHeight": 400,
         "resizable": true,
         "visible": false,
         "center": true

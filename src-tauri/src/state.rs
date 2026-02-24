@@ -1,10 +1,14 @@
 use serde::Serialize;
 
+use crate::config::AppConfig;
+
 #[derive(Debug, Default, Serialize)]
 pub struct AppState {
     pub spotify_status: ConnectionStatus,
     pub websocket_status: ConnectionStatus,
     pub now_playing: Option<String>,
+    #[serde(skip)]
+    pub config: AppConfig,
 }
 
 #[derive(Debug, Default, Serialize)]

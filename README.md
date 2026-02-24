@@ -1,49 +1,72 @@
 # Music Relay
 
-Desktop relay application that proxies Spotify Web API requests from your local machine. Runs in the system tray and communicates with a remote server over WebSocket.
+Desktop application that proxies Spotify Web API requests from your local machine. Runs in the system tray, authenticates with Spotify via OAuth PKCE, and relays commands from a remote server over WebSocket -- so all Spotify API calls originate from the DJ's own IP.
 
-Built with [Tauri v2](https://v2.tauri.app), React, and TypeScript.
+## Download
 
-## How It Works
+Grab the latest release from [GitHub Releases](https://github.com/ghreprimand/music-relay/releases).
 
-1. Authenticates with Spotify using OAuth PKCE (localhost redirect)
-2. Connects to a remote server via WebSocket
-3. Receives commands (get now-playing, search, queue tracks) and executes them against the Spotify API from the local machine's IP
-4. Reports results back over the WebSocket connection
+| Platform | Format |
+|----------|--------|
+| Linux | `.AppImage`, `.deb` |
+| Windows | `.msi` |
 
-## Requirements
+## First-Run Setup
 
-- Node.js 22+
-- Rust stable (1.77+)
-- Linux: `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`
-- Windows: WebView2 (included in Windows 10/11)
+### 1. Create a Spotify App
 
-## Development
+1. Open [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard)
+2. Click **Create App**
+3. Set the **Redirect URI** to:
+   ```
+   http://127.0.0.1:18974/callback
+   ```
+4. Save the app, then copy the **Client ID** (32-character hex string)
 
-```sh
-npm install
-cargo tauri dev
-```
+### 2. Configure Music Relay
 
-## Building
-
-```sh
-cargo tauri build
-```
-
-Produces `.deb` and `.AppImage` on Linux, `.msi` on Windows.
-
-## Configuration
-
-On first launch the app opens a settings window where you enter:
+Launch the app. It opens a settings window on first run.
 
 | Field | Description |
 |-------|-------------|
-| WebSocket URL | Server endpoint (wss://...) |
-| Spotify Client ID | From your Spotify Developer Dashboard |
-| Poll Interval | How often to report now-playing state (seconds) |
+| Client ID | The Spotify Client ID from step 1 |
+| WebSocket URL | Server endpoint (`wss://...`) provided by your server admin |
+| Poll Interval | How often to report now-playing state, in seconds (default: 5) |
 
-Credentials are stored in the OS keychain via the `keyring` crate.
+Click **Save**. The app minimizes to the system tray and begins connecting.
+
+## Autostart
+
+Enable **Launch at startup** in Settings to start Music Relay automatically when you log in.
+
+- **Linux:** creates a `.desktop` entry in `~/.config/autostart/`
+- **Windows:** adds a registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+
+## Configuration
+
+Settings are stored as JSON via the Tauri store plugin:
+
+| Platform | Path |
+|----------|------|
+| Linux | `~/.local/share/com.musicrelay.app/config.json` |
+| Windows | `%APPDATA%\com.musicrelay.app\config.json` |
+
+## Building from Source
+
+### Prerequisites
+
+- Node.js 22+
+- Rust stable (1.77+)
+- **Linux:** `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`, `patchelf`
+- **Windows:** WebView2 (included in Windows 10/11)
+
+### Commands
+
+```sh
+npm install
+cargo tauri dev      # development mode
+cargo tauri build    # production build
+```
 
 ## Protocol
 
