@@ -1,0 +1,27 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicedaycode/tauri-schema/v2/capabilities-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for Music Relay",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "store:default",
+    {
+      "identifier": "core:window:allow-show",
+      "windows": ["main"]
+    },
+    {
+      "identifier": "core:window:allow-hide",
+      "windows": ["main"]
+    },
+    {
+      "identifier": "core:window:allow-close",
+      "windows": ["main"]
+    },
+    {
+      "identifier": "core:window:allow-set-focus",
+      "windows": ["main"]
+    }
+  ]
+}

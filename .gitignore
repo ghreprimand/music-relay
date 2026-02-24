@@ -1,0 +1,31 @@
+# Project-local AI config
+CLAUDE.md
+.claude/
+
+# Rust
+/src-tauri/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Tauri
+/src-tauri/gen/
+/src-tauri/icons/
+
+# Environment
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
