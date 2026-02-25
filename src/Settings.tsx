@@ -126,7 +126,8 @@ export default function Settings({ onSaved }: SettingsProps) {
                   type="button"
                   className="field-link"
                   onClick={() => {
-                    invoke("open_url", { url: "https://developer.spotify.com/dashboard" });
+                    invoke("open_url", { url: "https://developer.spotify.com/dashboard" })
+                      .catch(() => window.open("https://developer.spotify.com/dashboard", "_blank"));
                   }}
                 >
                   Create a Spotify app
