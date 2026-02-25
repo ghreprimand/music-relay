@@ -637,7 +637,7 @@ async fn authenticate_spotify<P: RelayPlatform>(
                 if msg.contains("invalid_grant") {
                     platform.clear_refresh_token();
                     return Err(RelayError::NeedsAuth(
-                        "Spotify refresh token revoked. Open Music Relay to re-authenticate.".into(),
+                        "Spotify session expired. Click Reconnect to sign in again.".into(),
                     ));
                 }
                 // Other refresh failures (network, server errors) are transient
@@ -655,7 +655,7 @@ async fn authenticate_spotify<P: RelayPlatform>(
         |url| platform.present_auth_url(url),
     )
     .await
-    .map_err(|e| RelayError::NeedsAuth(format!("Spotify authorization failed: {}", e)))?;
+    .map_err(|e| RelayError::NeedsAuth(format!("Spotify sign-in was not completed: {}", e)))?;
 
     Ok(tokens)
 }
