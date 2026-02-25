@@ -29,6 +29,8 @@ function validate(field: string, value: string): string | null {
 
 export default function Settings({ onSaved }: SettingsProps) {
   const [websocketUrl, setWebsocketUrl] = useState("");
+  const [websocketToken, setWebsocketToken] = useState("");
+  const [websocketChannel, setWebsocketChannel] = useState("");
   const [spotifyClientId, setSpotifyClientId] = useState("");
   const [pollInterval, setPollInterval] = useState(5);
   const [saving, setSaving] = useState(false);
@@ -40,10 +42,14 @@ export default function Settings({ onSaved }: SettingsProps) {
   useEffect(() => {
     load("config.json").then(async (store) => {
       const url = await store.get<string>("websocket_url");
+      const token = await store.get<string>("websocket_token");
+      const channel = await store.get<string>("websocket_channel");
       const clientId = await store.get<string>("spotify_client_id");
       const interval = await store.get<number>("poll_interval_secs");
       const ctt = await store.get<boolean>("close_to_tray");
       if (url) setWebsocketUrl(url);
+      if (token) setWebsocketToken(token);
+      if (channel) setWebsocketChannel(channel);
       if (clientId) setSpotifyClientId(clientId);
       if (interval) setPollInterval(interval);
       if (ctt !== null && ctt !== undefined) setCloseToTray(ctt);
@@ -71,6 +77,8 @@ export default function Settings({ onSaved }: SettingsProps) {
     try {
       const store = await load("config.json");
       await store.set("websocket_url", websocketUrl.trim());
+      await store.set("websocket_token", websocketToken.trim());
+      await store.set("websocket_channel", websocketChannel.trim());
       await store.set("spotify_client_id", spotifyClientId.trim());
       await store.set("poll_interval_secs", Math.max(1, Math.min(60, pollInterval)));
       await store.set("close_to_tray", closeToTray);
@@ -179,6 +187,36 @@ export default function Settings({ onSaved }: SettingsProps) {
                 The Centrifugo WebSocket endpoint provided by your server admin
               </div>
             )}
+          </div>
+          <div className="field">
+            <label htmlFor="ws-token">Connection Token</label>
+            <input
+              id="ws-token"
+              type="password"
+              value={websocketToken}
+              onChange={(e) => setWebsocketToken(e.target.value)}
+              placeholder="JWT token for Centrifugo auth"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <div className="field-hint">
+              JWT token for authenticating with the WebSocket server
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="ws-channel">Channel</label>
+            <input
+              id="ws-channel"
+              type="text"
+              value={websocketChannel}
+              onChange={(e) => setWebsocketChannel(e.target.value)}
+              placeholder="relay:your-channel"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <div className="field-hint">
+              Channel to subscribe to for receiving commands
+            </div>
           </div>
         </div>
 

@@ -10,12 +10,16 @@ use state::AppState;
 use std::sync::Mutex;
 use tauri::{
     image::Image,
-    Manager,
-    menu::{MenuBuilder, MenuItemBuilder},
+    Listener, Manager,
+    menu::{MenuBuilder, MenuItem, MenuItemBuilder},
     tray::TrayIconBuilder,
 };
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_store::StoreExt;
+
+struct TrayState {
+    status_item: MenuItem<tauri::Wry>,
+}
 
 #[tauri::command]
 fn get_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Value, String> {
@@ -70,7 +74,7 @@ fn get_close_to_tray(state: tauri::State<'_, Mutex<AppState>>) -> Result<bool, S
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let show = MenuItemBuilder::with_id("show", "Show").build(app)?;
-    let status = MenuItemBuilder::with_id("status", "Status: disconnected")
+    let status_item = MenuItemBuilder::with_id("status", "Status: disconnected")
         .enabled(false)
         .build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
@@ -78,13 +82,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = MenuBuilder::new(app)
         .item(&show)
         .separator()
-        .item(&status)
+        .item(&status_item)
         .separator()
         .item(&quit)
         .build()?;
 
     let _tray = TrayIconBuilder::new()
         .icon(Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to decode tray icon"))
+        .tooltip("Music Relay")
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => {
@@ -109,7 +114,49 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
 
+    app.manage(TrayState { status_item });
+
     Ok(())
+}
+
+fn setup_tray_updater(app: &tauri::App) {
+    let handle = app.handle().clone();
+    app.listen("status-changed", move |event| {
+        if let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) {
+            let tray = handle.try_state::<TrayState>();
+            if let Some(tray) = tray {
+                let spotify = payload["spotify"].as_str().unwrap_or("Disconnected");
+                let ws = payload["websocket"].as_str().unwrap_or("Disconnected");
+
+                let status_text = match (spotify, ws) {
+                    ("Connected", "Connected") => "Status: connected".to_string(),
+                    ("Connected", _) => "Status: Spotify OK, server disconnected".to_string(),
+                    ("Connecting", _) => "Status: connecting...".to_string(),
+                    _ => "Status: disconnected".to_string(),
+                };
+
+                let _ = tray.status_item.set_text(&status_text);
+
+                // Update tooltip with now-playing info
+                let tooltip = if let Some(np) = payload["now_playing"].as_object() {
+                    let artist = np.get("artist_name").and_then(|v| v.as_str()).unwrap_or("");
+                    let track = np.get("track_name").and_then(|v| v.as_str()).unwrap_or("");
+                    let playing = np.get("is_playing").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if playing && !track.is_empty() {
+                        format!("Music Relay - {} - {}", artist, track)
+                    } else {
+                        "Music Relay - Idle".to_string()
+                    }
+                } else {
+                    "Music Relay".to_string()
+                };
+
+                if let Some(tray_icon) = handle.tray_by_id("main") {
+                    let _ = tray_icon.set_tooltip(Some(&tooltip));
+                }
+            }
+        }
+    });
 }
 
 fn setup_close_to_tray(app: &tauri::App) {
@@ -156,6 +203,7 @@ pub fn run() {
             app.manage(Mutex::new(state));
 
             setup_tray(app)?;
+            setup_tray_updater(app);
             setup_close_to_tray(app);
 
             // Auto-start relay if already configured

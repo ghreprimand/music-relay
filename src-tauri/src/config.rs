@@ -7,6 +7,8 @@ use tauri_plugin_store::Store;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub websocket_url: String,
+    pub websocket_token: String,
+    pub websocket_channel: String,
     pub spotify_client_id: String,
     pub redirect_uri: String,
     pub poll_interval_secs: u64,
@@ -17,6 +19,8 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             websocket_url: String::new(),
+            websocket_token: String::new(),
+            websocket_channel: String::new(),
             spotify_client_id: String::new(),
             redirect_uri: "http://127.0.0.1:18974/callback".to_string(),
             poll_interval_secs: 5,
@@ -29,6 +33,16 @@ impl AppConfig {
     pub fn from_store<R: Runtime>(store: &Arc<Store<R>>) -> Self {
         let websocket_url = store
             .get("websocket_url")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
+
+        let websocket_token = store
+            .get("websocket_token")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
+
+        let websocket_channel = store
+            .get("websocket_channel")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_default();
 
@@ -49,6 +63,8 @@ impl AppConfig {
 
         Self {
             websocket_url,
+            websocket_token,
+            websocket_channel,
             spotify_client_id,
             redirect_uri: "http://127.0.0.1:18974/callback".to_string(),
             poll_interval_secs,
