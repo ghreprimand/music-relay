@@ -1,19 +1,11 @@
 use serde::Serialize;
 
-use crate::config::AppConfig;
-
 #[derive(Debug, Default, Serialize)]
 pub struct AppState {
     pub spotify_status: ConnectionStatus,
     pub websocket_status: ConnectionStatus,
     pub now_playing: Option<NowPlayingInfo>,
     pub last_error: Option<String>,
-    #[serde(skip)]
-    pub config: AppConfig,
-    #[serde(skip)]
-    pub spotify_refresh_token: Option<String>,
-    #[serde(skip)]
-    pub relay_shutdown: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 #[derive(Debug, Clone, Serialize)]

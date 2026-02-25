@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.3.0
+
+### Breaking Changes
+
+- Replaced static `websocket_token` and `websocket_channel` config fields with `server_url` and `api_key`
+- Existing installations must reconfigure with the new server URL and API key after upgrading
+- Spotify refresh token is preserved; no re-authentication required
+
+### Features
+
+- **Headless binary:** Standalone `relay-headless` CLI for running on servers and Raspberry Pi without a desktop environment
+  - Interactive first-run setup prompts for all configuration
+  - JSON config file at `~/.config/music-relay/config.json`
+  - ARM64 (aarch64) cross-compiled builds for Raspberry Pi
+  - Systemd service unit included in `deploy/music-relay.service`
+- **Dynamic token acquisition:** Centrifugo connection tokens are now fetched from the server on every connect, replacing the static JWT
+- **Server-provided channel:** Channel name is now returned by the token endpoint alongside the JWT, rather than derived client-side
+- **Proactive token refresh:** JWT `exp` claim is decoded on connect; the relay schedules a clean reconnect 1 hour before token expiry to avoid any disruption from server-side disconnects
+
+### Architecture
+
+- Restructured into a Cargo workspace with three crates:
+  - `relay-core` -- shared library (Centrifugo, Spotify, OAuth, token handling, relay orchestration)
+  - `music-relay` (src-tauri) -- Tauri desktop application
+  - `relay-headless` -- headless CLI binary
+- Introduced `RelayPlatform` trait to decouple relay logic from Tauri APIs
+- Moved `centrifugo.rs`, `spotify.rs`, `oauth.rs`, `state.rs`, `relay.rs` into `relay-core`
+- `oauth.rs` now accepts a `present_url` callback instead of directly opening a browser
+- `state.rs` simplified: removed config, shutdown handle, and refresh token fields (now managed by platform implementations)
+
+### CI
+
+- Split build workflow into `build-tauri` and `build-headless` jobs
+- Added ARM64 cross-compilation using `cross` for headless builds
+- Headless binaries included as release assets alongside Tauri bundles
+
 ## 1.2.0
 
 ### Reliability

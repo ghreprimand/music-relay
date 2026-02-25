@@ -5,19 +5,32 @@ Music Relay connects to a [Centrifugo](https://centrifugal.dev/) server using th
 ## Transport
 
 - **Protocol:** Centrifugo JSON (line-delimited)
-- **Connection:** WebSocket to the configured URL (e.g. `wss://example.com/connection/websocket`)
-- **Authentication:** JWT connection token provided in the `connect` command
+- **Connection:** WebSocket derived from the server URL (e.g. `https://example.com` becomes `wss://example.com/connection/websocket`)
+- **Authentication:** JWT connection token fetched from `GET {server_url}/api/connector/token` with `Authorization: Bearer {api_key}`
+- **Channel:** Returned by the token endpoint alongside the JWT
 - **Keep-alive:** Application-level ping/pong (empty `{}` frames)
+
+## Token Lifecycle
+
+1. On startup and every reconnect, the client fetches a fresh JWT and channel from the token endpoint
+2. The token endpoint returns `{ "token": "eyJ...", "channel": "..." }`
+3. The WebSocket URL is derived from the configured server URL by swapping the scheme (`https` to `wss`) and appending `/connection/websocket`
+4. The client decodes the JWT `exp` claim (without signature verification) to determine token expiry
+5. If the `exp` claim is present, the client schedules a proactive reconnect 1 hour before token expiry to avoid disruption from server-side disconnects
+6. If no `exp` claim is found or the token is already within the refresh window, the client logs a warning and relies on the server to disconnect at expiry
 
 ## Message Flow
 
-1. Client connects to WebSocket
-2. Client sends `connect` command with JWT token
-3. Client sends `subscribe` command for the configured channel
-4. Server publishes commands to the channel as Centrifugo publications
-5. Client executes commands against the Spotify API
-6. Client publishes responses back to the same channel
-7. Client proactively publishes now-playing updates when the track changes
+1. Client fetches a JWT connection token and channel from the server
+2. Client derives the WebSocket URL from the configured server URL
+3. Client connects to WebSocket
+4. Client sends `connect` command with the JWT token
+5. Client sends `subscribe` command for the derived channel
+6. Server publishes commands to the channel as Centrifugo publications
+7. Client executes commands against the Spotify API
+8. Client publishes responses back to the same channel
+9. Client proactively publishes now-playing updates when the track changes
+10. Before token expiry, the client disconnects and reconnects with a fresh token
 
 ## Server Commands
 
@@ -367,7 +380,7 @@ All messages are wrapped in Centrifugo's publish command on the wire:
 {
   "id": 5,
   "publish": {
-    "channel": "relay:your-channel",
+    "channel": "prod:relay:abc123",
     "data": { ... }
   }
 }
@@ -391,7 +404,9 @@ The relay requests these OAuth scopes:
 
 ## Connection Lifecycle
 
+- On every connect/reconnect, a fresh Centrifugo JWT is fetched from the token endpoint
 - Reconnects automatically on WebSocket disconnect or ping timeout
+- Proactive reconnect scheduled 1 hour before JWT expiry (tokens are valid for 24 hours)
 - Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
 - Backoff resets on successful connection
 - Spotify token refreshes automatically before expiry (60s buffer)

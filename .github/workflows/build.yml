@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-tauri:
     strategy:
       fail-fast: false
       matrix:
@@ -43,8 +43,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - run: npm ci
 
@@ -52,17 +50,64 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts
+      - name: Upload Tauri artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bundles-${{ matrix.platform }}
+          name: tauri-${{ matrix.platform }}
           path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/release/bundle/msi/*.msi
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/msi/*.msi
+
+  build-headless:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            binary: relay-headless
+          - platform: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            binary: relay-headless
+            cross: true
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build headless (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }} -p relay-headless
+
+      - name: Build headless (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p relay-headless
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.binary }}-${{ matrix.target }}
+
+      - name: Upload headless artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-${{ matrix.target }}
+          path: dist/
 
   release:
-    needs: build
+    needs: [build-tauri, build-headless]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
 
@@ -100,3 +145,4 @@ jobs:
             artifacts/**/*.deb
             artifacts/**/*.AppImage
             artifacts/**/*.msi
+            artifacts/**/relay-headless-*

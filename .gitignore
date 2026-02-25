@@ -3,6 +3,7 @@ CLAUDE.md
 .claude/
 
 # Rust
+/target/
 /src-tauri/target/
 **/*.rs.bk
 

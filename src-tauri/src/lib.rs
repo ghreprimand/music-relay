@@ -1,13 +1,11 @@
-mod centrifugo;
 mod config;
-mod oauth;
-mod relay;
-mod spotify;
-mod state;
+mod platform;
 
-use config::AppConfig;
-use state::{AppState, ConnectionStatus};
-use std::sync::Mutex;
+use config::TauriAppConfig;
+use platform::TauriPlatform;
+
+use relay_core::{AppState, ConnectionStatus};
+use std::sync::{Arc, Mutex};
 use tauri::{
     image::Image,
     Listener, Manager,
@@ -19,6 +17,11 @@ use tauri_plugin_store::StoreExt;
 
 struct TrayState {
     status_item: MenuItem<tauri::Wry>,
+}
+
+struct TauriInner {
+    config: TauriAppConfig,
+    relay_shutdown: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 #[tauri::command]
@@ -33,34 +36,35 @@ fn get_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<serde_json::Va
 }
 
 #[tauri::command]
-fn get_config_status(state: tauri::State<'_, Mutex<AppState>>) -> Result<bool, String> {
-    let state = state.lock().map_err(|e| e.to_string())?;
-    Ok(state.config.is_configured())
+fn get_config_status(inner: tauri::State<'_, Mutex<TauriInner>>) -> Result<bool, String> {
+    let inner = inner.lock().map_err(|e| e.to_string())?;
+    Ok(inner.config.is_configured())
 }
 
 #[tauri::command]
 fn reload_config(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Mutex<AppState>>,
+    inner: tauri::State<'_, Mutex<TauriInner>>,
 ) -> Result<bool, String> {
     let store = app.store("config.json").map_err(|e| e.to_string())?;
-    let config = AppConfig::from_store(&store);
+    let config = TauriAppConfig::from_store(&store);
     let configured = config.is_configured();
 
     // Stop existing relay if running
     {
-        let mut state = state.lock().map_err(|e| e.to_string())?;
-        if let Some(tx) = state.relay_shutdown.take() {
+        let mut inner = inner.lock().map_err(|e| e.to_string())?;
+        if let Some(tx) = inner.relay_shutdown.take() {
             let _ = tx.send(true);
         }
-        state.config = config.clone();
+        inner.config = config.clone();
     }
 
     // Start relay if configured
     if configured {
-        let shutdown_tx = relay::start_relay(app, config);
-        let mut state = state.lock().map_err(|e| e.to_string())?;
-        state.relay_shutdown = Some(shutdown_tx);
+        let platform = Arc::new(TauriPlatform::new(app));
+        let shutdown_tx = relay_core::start_relay(platform, config.relay);
+        let mut inner = inner.lock().map_err(|e| e.to_string())?;
+        inner.relay_shutdown = Some(shutdown_tx);
     }
 
     Ok(configured)
@@ -69,33 +73,39 @@ fn reload_config(
 #[tauri::command]
 fn restart_relay(
     app: tauri::AppHandle,
+    inner: tauri::State<'_, Mutex<TauriInner>>,
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<(), String> {
     let config = {
-        let mut state = state.lock().map_err(|e| e.to_string())?;
+        let mut inner = inner.lock().map_err(|e| e.to_string())?;
         // Stop existing relay
-        if let Some(tx) = state.relay_shutdown.take() {
+        if let Some(tx) = inner.relay_shutdown.take() {
             let _ = tx.send(true);
         }
+        inner.config.clone()
+    };
+
+    {
+        let mut state = state.lock().map_err(|e| e.to_string())?;
         state.last_error = None;
         state.spotify_status = ConnectionStatus::Disconnected;
         state.websocket_status = ConnectionStatus::Disconnected;
-        state.config.clone()
-    };
+    }
 
     if config.is_configured() {
-        let shutdown_tx = relay::start_relay(app, config);
-        let mut state = state.lock().map_err(|e| e.to_string())?;
-        state.relay_shutdown = Some(shutdown_tx);
+        let platform = Arc::new(TauriPlatform::new(app));
+        let shutdown_tx = relay_core::start_relay(platform, config.relay);
+        let mut inner = inner.lock().map_err(|e| e.to_string())?;
+        inner.relay_shutdown = Some(shutdown_tx);
     }
 
     Ok(())
 }
 
 #[tauri::command]
-fn get_close_to_tray(state: tauri::State<'_, Mutex<AppState>>) -> Result<bool, String> {
-    let state = state.lock().map_err(|e| e.to_string())?;
-    Ok(state.config.close_to_tray)
+fn get_close_to_tray(inner: tauri::State<'_, Mutex<TauriInner>>) -> Result<bool, String> {
+    let inner = inner.lock().map_err(|e| e.to_string())?;
+    Ok(inner.config.close_to_tray)
 }
 
 #[tauri::command]
@@ -214,8 +224,8 @@ fn setup_close_to_tray(app: &tauri::App) {
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             let close_to_tray = app_handle
-                .try_state::<Mutex<AppState>>()
-                .and_then(|state| state.lock().ok().map(|s| s.config.close_to_tray))
+                .try_state::<Mutex<TauriInner>>()
+                .and_then(|inner| inner.lock().ok().map(|i| i.config.close_to_tray))
                 .unwrap_or(true);
 
             if close_to_tray {
@@ -239,14 +249,14 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let store = app.store("config.json")?;
-            let config = AppConfig::from_store(&store);
+            let config = TauriAppConfig::from_store(&store);
             let configured = config.is_configured();
 
-            let state = AppState {
+            app.manage(Mutex::new(AppState::default()));
+            app.manage(Mutex::new(TauriInner {
                 config: config.clone(),
-                ..Default::default()
-            };
-            app.manage(Mutex::new(state));
+                relay_shutdown: None,
+            }));
 
             setup_tray(app)?;
             setup_tray_updater(app);
@@ -254,10 +264,11 @@ pub fn run() {
 
             // Auto-start relay if already configured
             if configured {
-                let shutdown_tx = relay::start_relay(app.handle().clone(), config);
-                if let Some(state) = app.try_state::<Mutex<AppState>>() {
-                    if let Ok(mut state) = state.lock() {
-                        state.relay_shutdown = Some(shutdown_tx);
+                let platform = Arc::new(TauriPlatform::new(app.handle().clone()));
+                let shutdown_tx = relay_core::start_relay(platform, config.relay);
+                if let Some(inner) = app.try_state::<Mutex<TauriInner>>() {
+                    if let Ok(mut inner) = inner.lock() {
+                        inner.relay_shutdown = Some(shutdown_tx);
                     }
                 }
             }

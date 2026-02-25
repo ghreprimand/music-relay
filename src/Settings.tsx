@@ -11,9 +11,8 @@ interface SettingsProps {
 }
 
 interface StoredConfig {
-  websocketUrl: string;
-  websocketToken: string;
-  websocketChannel: string;
+  serverUrl: string;
+  apiKey: string;
   spotifyClientId: string;
   pollInterval: number;
   closeToTray: boolean;
@@ -21,10 +20,10 @@ interface StoredConfig {
 
 function validate(field: string, value: string): string | null {
   switch (field) {
-    case "websocketUrl":
+    case "serverUrl":
       if (!value.trim()) return null;
-      if (!/^wss?:\/\/.+/.test(value.trim()))
-        return "Must start with wss:// (or ws:// for local dev)";
+      if (!/^https?:\/\/.+/.test(value.trim()))
+        return "Must start with https:// (or http:// for local dev)";
       return null;
     case "spotifyClientId":
       if (!value.trim()) return null;
@@ -37,9 +36,8 @@ function validate(field: string, value: string): string | null {
 }
 
 export default function Settings({ onSaved, onCancel }: SettingsProps) {
-  const [websocketUrl, setWebsocketUrl] = useState("");
-  const [websocketToken, setWebsocketToken] = useState("");
-  const [websocketChannel, setWebsocketChannel] = useState("");
+  const [serverUrl, setServerUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [spotifyClientId, setSpotifyClientId] = useState("");
   const [pollInterval, setPollInterval] = useState(5);
   const [saving, setSaving] = useState(false);
@@ -52,22 +50,19 @@ export default function Settings({ onSaved, onCancel }: SettingsProps) {
 
   useEffect(() => {
     load("config.json").then(async (store) => {
-      const url = await store.get<string>("websocket_url");
-      const token = await store.get<string>("websocket_token");
-      const channel = await store.get<string>("websocket_channel");
+      const url = await store.get<string>("server_url");
+      const key = await store.get<string>("api_key");
       const clientId = await store.get<string>("spotify_client_id");
       const interval = await store.get<number>("poll_interval_secs");
       const ctt = await store.get<boolean>("close_to_tray");
-      if (url) setWebsocketUrl(url);
-      if (token) setWebsocketToken(token);
-      if (channel) setWebsocketChannel(channel);
+      if (url) setServerUrl(url);
+      if (key) setApiKey(key);
       if (clientId) setSpotifyClientId(clientId);
       if (interval) setPollInterval(interval);
       if (ctt !== null && ctt !== undefined) setCloseToTray(ctt);
       originalConfig.current = {
-        websocketUrl: url || "",
-        websocketToken: token || "",
-        websocketChannel: channel || "",
+        serverUrl: url || "",
+        apiKey: key || "",
         spotifyClientId: clientId || "",
         pollInterval: interval || 5,
         closeToTray: ctt !== null && ctt !== undefined ? ctt : true,
@@ -80,22 +75,22 @@ export default function Settings({ onSaved, onCancel }: SettingsProps) {
     setTouched((prev) => ({ ...prev, [field]: true }));
   }
 
-  const wsError = touched.websocketUrl ? validate("websocketUrl", websocketUrl) : null;
+  const serverUrlError = touched.serverUrl ? validate("serverUrl", serverUrl) : null;
   const clientIdError = touched.spotifyClientId ? validate("spotifyClientId", spotifyClientId) : null;
 
   const canSave =
-    websocketUrl.trim() !== "" &&
+    serverUrl.trim() !== "" &&
+    apiKey.trim() !== "" &&
     spotifyClientId.trim() !== "" &&
-    !validate("websocketUrl", websocketUrl) &&
+    !validate("serverUrl", serverUrl) &&
     !validate("spotifyClientId", spotifyClientId);
 
   function configChanged(): boolean {
     const orig = originalConfig.current;
     if (!orig) return true;
     return (
-      websocketUrl.trim() !== orig.websocketUrl ||
-      websocketToken.trim() !== orig.websocketToken ||
-      websocketChannel.trim() !== orig.websocketChannel ||
+      serverUrl.trim() !== orig.serverUrl ||
+      apiKey.trim() !== orig.apiKey ||
       spotifyClientId.trim() !== orig.spotifyClientId ||
       Math.max(1, Math.min(60, pollInterval)) !== orig.pollInterval ||
       closeToTray !== orig.closeToTray
@@ -109,9 +104,8 @@ export default function Settings({ onSaved, onCancel }: SettingsProps) {
     setSaveError(null);
     try {
       const store = await load("config.json");
-      await store.set("websocket_url", websocketUrl.trim());
-      await store.set("websocket_token", websocketToken.trim());
-      await store.set("websocket_channel", websocketChannel.trim());
+      await store.set("server_url", serverUrl.trim());
+      await store.set("api_key", apiKey.trim());
       await store.set("spotify_client_id", spotifyClientId.trim());
       await store.set("poll_interval_secs", Math.max(1, Math.min(60, pollInterval)));
       await store.set("close_to_tray", closeToTray);
@@ -207,52 +201,37 @@ export default function Settings({ onSaved, onCancel }: SettingsProps) {
         <div className="card">
           <div className="card-title">Server</div>
           <div className="field">
-            <label htmlFor="ws-url">WebSocket URL</label>
+            <label htmlFor="server-url">Server URL</label>
             <input
-              id="ws-url"
+              id="server-url"
               type="text"
-              className={wsError ? "input-error" : undefined}
-              value={websocketUrl}
-              onChange={(e) => setWebsocketUrl(e.target.value)}
-              onBlur={() => markTouched("websocketUrl")}
-              placeholder="wss://your-server.com/connection/websocket"
+              className={serverUrlError ? "input-error" : undefined}
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+              onBlur={() => markTouched("serverUrl")}
+              placeholder="https://your-server.com"
             />
-            {wsError ? (
-              <div className="field-error">{wsError}</div>
+            {serverUrlError ? (
+              <div className="field-error">{serverUrlError}</div>
             ) : (
               <div className="field-hint">
-                The Centrifugo WebSocket endpoint provided by your server admin
+                The base URL of your server (e.g., https://sq.example.com)
               </div>
             )}
           </div>
           <div className="field">
-            <label htmlFor="ws-token">Connection Token</label>
+            <label htmlFor="api-key">API Key</label>
             <input
-              id="ws-token"
+              id="api-key"
               type="password"
-              value={websocketToken}
-              onChange={(e) => setWebsocketToken(e.target.value)}
-              placeholder="JWT token for Centrifugo auth"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Your connector API key"
               spellCheck={false}
               autoComplete="off"
             />
             <div className="field-hint">
-              JWT token for authenticating with the WebSocket server
-            </div>
-          </div>
-          <div className="field">
-            <label htmlFor="ws-channel">Channel</label>
-            <input
-              id="ws-channel"
-              type="text"
-              value={websocketChannel}
-              onChange={(e) => setWebsocketChannel(e.target.value)}
-              placeholder="relay:your-channel"
-              spellCheck={false}
-              autoComplete="off"
-            />
-            <div className="field-hint">
-              Channel to subscribe to for receiving commands
+              API key for authenticating with the server
             </div>
           </div>
         </div>

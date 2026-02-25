@@ -1,0 +1,14 @@
+[Unit]
+Description=Music Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/relay-headless
+Restart=on-failure
+RestartSec=10
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
