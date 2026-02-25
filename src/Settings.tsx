@@ -38,6 +38,7 @@ export default function Settings({ onSaved }: SettingsProps) {
   const [autostart, setAutostart] = useState(false);
   const [closeToTray, setCloseToTray] = useState(true);
   const [copyLabel, setCopyLabel] = useState("Copy");
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     load("config.json").then(async (store) => {
@@ -74,6 +75,7 @@ export default function Settings({ onSaved }: SettingsProps) {
     e.preventDefault();
     if (!canSave) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const store = await load("config.json");
       await store.set("websocket_url", websocketUrl.trim());
@@ -85,6 +87,8 @@ export default function Settings({ onSaved }: SettingsProps) {
       await store.save();
       await invoke("reload_config");
       onSaved();
+    } catch (err) {
+      setSaveError(`Failed to save: ${err}`);
     } finally {
       setSaving(false);
     }
@@ -279,6 +283,12 @@ export default function Settings({ onSaved }: SettingsProps) {
             </div>
           </div>
         </div>
+
+        {saveError && (
+          <div className="card error-card">
+            <div className="error-text">{saveError}</div>
+          </div>
+        )}
 
         <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
           <button
