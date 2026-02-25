@@ -23,14 +23,19 @@ pub trait RelayPlatform: Send + Sync + 'static {
     fn present_auth_url(&self, url: &str);
 }
 
-/// Start the background relay task. Returns a shutdown sender to stop it.
+/// Create the relay task. Returns a shutdown sender and a future to spawn.
+/// The caller is responsible for spawning the future on an appropriate runtime
+/// (e.g. `tokio::spawn` for headless, `tauri::async_runtime::spawn` for Tauri).
 pub fn start_relay<P: RelayPlatform>(
     platform: Arc<P>,
     config: RelayConfig,
-) -> tokio::sync::watch::Sender<bool> {
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    impl std::future::Future<Output = ()> + Send + 'static,
+) {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    tokio::spawn(async move {
+    let future = async move {
         let mut attempt: u32 = 0;
         let mut shutdown_rx = shutdown_rx;
         let connected = Arc::new(AtomicBool::new(false));
@@ -88,9 +93,9 @@ pub fn start_relay<P: RelayPlatform>(
                 }
             }
         }
-    });
+    };
 
-    shutdown_tx
+    (shutdown_tx, future)
 }
 
 async fn run_relay<P: RelayPlatform>(
