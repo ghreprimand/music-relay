@@ -16,8 +16,10 @@
   - ARM64 (aarch64) cross-compiled builds for Raspberry Pi
   - Systemd service unit included in `deploy/music-relay.service`
 - **Dynamic token acquisition:** Centrifugo connection tokens are now fetched from the server on every connect, replacing the static JWT
-- **Server-provided channel:** Channel name is now returned by the token endpoint alongside the JWT, rather than derived client-side
+- **Server-provided connection params:** Channel name and WebSocket URL are now returned by the token endpoint alongside the JWT, rather than derived client-side
 - **Proactive token refresh:** JWT `exp` claim is decoded on connect; the relay schedules a clean reconnect 1 hour before token expiry to avoid any disruption from server-side disconnects
+- **Smarter error handling:** Revoked Spotify tokens and failed OAuth flows stop immediately instead of retrying. Only transient errors (network issues) trigger retries
+- **Improved error messages:** User-facing messages are now actionable (e.g. "Spotify session expired. Click Reconnect to sign in again.")
 
 ### Architecture
 
@@ -29,6 +31,8 @@
 - Moved `centrifugo.rs`, `spotify.rs`, `oauth.rs`, `state.rs`, `relay.rs` into `relay-core`
 - `oauth.rs` now accepts a `present_url` callback instead of directly opening a browser
 - `state.rs` simplified: removed config, shutdown handle, and refresh token fields (now managed by platform implementations)
+- `start_relay()` returns a future instead of spawning internally, allowing callers to use the appropriate async runtime
+- `RelayError` enum distinguishes transient failures (retryable) from auth failures (immediate stop)
 
 ### CI
 
