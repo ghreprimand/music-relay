@@ -73,12 +73,64 @@ pub struct SearchTracks {
     pub total: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackState {
+    pub is_playing: bool,
+    pub progress_ms: Option<u64>,
+    pub item: Option<Track>,
+    pub context: Option<PlaybackContext>,
+    pub shuffle_state: Option<bool>,
+    pub device: Option<Device>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaybackContext {
+    #[serde(rename = "type")]
+    pub context_type: String,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Device {
+    pub id: Option<String>,
+    pub name: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistTracksResponse {
+    pub items: Vec<PlaylistItem>,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistItem {
+    pub track: Option<Track>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePlaylistResponse {
+    pub id: String,
+    pub external_urls: ExternalUrls,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalUrls {
+    pub spotify: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub id: String,
+}
+
 pub struct SpotifyClient {
     http: reqwest::Client,
     client_id: String,
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_at: u64,
+    user_id: Option<String>,
 }
 
 impl SpotifyClient {
@@ -89,6 +141,7 @@ impl SpotifyClient {
             access_token: None,
             refresh_token: None,
             expires_at: 0,
+            user_id: None,
         }
     }
 
@@ -147,6 +200,81 @@ impl SpotifyClient {
             self.ensure_token().await?;
             let auth = self.auth_header()?;
             let resp = self.http.get(url).header("Authorization", &auth).send().await?;
+            return self.check_response(resp).await;
+        }
+
+        self.check_response(resp).await
+    }
+
+    async fn api_post(&mut self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, SpotifyError> {
+        self.ensure_token().await?;
+        let auth = self.auth_header()?;
+        let resp = self.http.post(url)
+            .header("Authorization", &auth)
+            .json(&body)
+            .send()
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            log::warn!("Got 401 from Spotify POST, attempting token refresh");
+            self.expires_at = 0;
+            self.ensure_token().await?;
+            let auth = self.auth_header()?;
+            let resp = self.http.post(url)
+                .header("Authorization", &auth)
+                .json(&body)
+                .send()
+                .await?;
+            return self.check_response(resp).await;
+        }
+
+        self.check_response(resp).await
+    }
+
+    async fn api_put(&mut self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, SpotifyError> {
+        self.ensure_token().await?;
+        let auth = self.auth_header()?;
+        let resp = self.http.put(url)
+            .header("Authorization", &auth)
+            .json(&body)
+            .send()
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            log::warn!("Got 401 from Spotify PUT, attempting token refresh");
+            self.expires_at = 0;
+            self.ensure_token().await?;
+            let auth = self.auth_header()?;
+            let resp = self.http.put(url)
+                .header("Authorization", &auth)
+                .json(&body)
+                .send()
+                .await?;
+            return self.check_response(resp).await;
+        }
+
+        self.check_response(resp).await
+    }
+
+    async fn api_delete(&mut self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, SpotifyError> {
+        self.ensure_token().await?;
+        let auth = self.auth_header()?;
+        let resp = self.http.delete(url)
+            .header("Authorization", &auth)
+            .json(&body)
+            .send()
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            log::warn!("Got 401 from Spotify DELETE, attempting token refresh");
+            self.expires_at = 0;
+            self.ensure_token().await?;
+            let auth = self.auth_header()?;
+            let resp = self.http.delete(url)
+                .header("Authorization", &auth)
+                .json(&body)
+                .send()
+                .await?;
             return self.check_response(resp).await;
         }
 
@@ -244,5 +372,138 @@ impl SpotifyClient {
         }
 
         Ok(())
+    }
+
+    pub async fn get_playback_state(&mut self) -> Result<Option<PlaybackState>, SpotifyError> {
+        let url = format!("{}/me/player", API_BASE);
+        let resp = self.api_get(&url).await?;
+
+        if resp.status() == reqwest::StatusCode::NO_CONTENT {
+            return Ok(None);
+        }
+
+        let body: PlaybackState = resp.json().await?;
+        Ok(Some(body))
+    }
+
+    pub async fn get_current_user(&mut self) -> Result<UserProfile, SpotifyError> {
+        if let Some(ref id) = self.user_id {
+            return Ok(UserProfile { id: id.clone() });
+        }
+
+        let url = format!("{}/me", API_BASE);
+        let resp = self.api_get(&url).await?;
+        let profile: UserProfile = resp.json().await?;
+        self.user_id = Some(profile.id.clone());
+        Ok(profile)
+    }
+
+    pub async fn get_playlist_tracks(
+        &mut self,
+        playlist_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<PlaylistTracksResponse, SpotifyError> {
+        let limit = limit.min(100);
+        let url = format!(
+            "{}/playlists/{}/tracks?offset={}&limit={}&fields=items(track(id,name,uri,duration_ms,artists(id,name),album(id,name,images))),total",
+            API_BASE, playlist_id, offset, limit
+        );
+        let resp = self.api_get(&url).await?;
+        let body: PlaylistTracksResponse = resp.json().await?;
+        Ok(body)
+    }
+
+    pub async fn add_to_playlist(
+        &mut self,
+        playlist_id: &str,
+        uris: Vec<String>,
+        position: Option<u32>,
+    ) -> Result<String, SpotifyError> {
+        let url = format!("{}/playlists/{}/tracks", API_BASE, playlist_id);
+        let mut snapshot_id = String::new();
+
+        for chunk in uris.chunks(100) {
+            let mut body = serde_json::json!({ "uris": chunk });
+            if let Some(pos) = position {
+                body["position"] = serde_json::json!(pos);
+            }
+            let resp = self.api_post(&url, body).await?;
+            let result: serde_json::Value = resp.json().await?;
+            snapshot_id = result["snapshot_id"].as_str().unwrap_or("").to_string();
+        }
+
+        Ok(snapshot_id)
+    }
+
+    pub async fn remove_from_playlist(
+        &mut self,
+        playlist_id: &str,
+        uris: Vec<String>,
+    ) -> Result<String, SpotifyError> {
+        let url = format!("{}/playlists/{}/tracks", API_BASE, playlist_id);
+        let mut snapshot_id = String::new();
+
+        for chunk in uris.chunks(100) {
+            let tracks: Vec<serde_json::Value> = chunk
+                .iter()
+                .map(|uri| serde_json::json!({ "uri": uri }))
+                .collect();
+            let body = serde_json::json!({ "tracks": tracks });
+            let resp = self.api_delete(&url, body).await?;
+            let result: serde_json::Value = resp.json().await?;
+            snapshot_id = result["snapshot_id"].as_str().unwrap_or("").to_string();
+        }
+
+        Ok(snapshot_id)
+    }
+
+    pub async fn replace_playlist_tracks(
+        &mut self,
+        playlist_id: &str,
+        uris: Vec<String>,
+    ) -> Result<String, SpotifyError> {
+        let url = format!("{}/playlists/{}/tracks", API_BASE, playlist_id);
+
+        // PUT the first 100 (replaces all existing tracks)
+        let first_chunk: Vec<&String> = uris.iter().take(100).collect();
+        let body = serde_json::json!({ "uris": first_chunk });
+        let resp = self.api_put(&url, body).await?;
+        let result: serde_json::Value = resp.json().await?;
+        let mut snapshot_id = result["snapshot_id"].as_str().unwrap_or("").to_string();
+
+        // POST remaining in batches of 100
+        if uris.len() > 100 {
+            for chunk in uris[100..].chunks(100) {
+                let body = serde_json::json!({ "uris": chunk });
+                let resp = self.api_post(&url, body).await?;
+                let result: serde_json::Value = resp.json().await?;
+                snapshot_id = result["snapshot_id"].as_str().unwrap_or("").to_string();
+            }
+        }
+
+        Ok(snapshot_id)
+    }
+
+    pub async fn create_playlist(
+        &mut self,
+        name: &str,
+        description: Option<&str>,
+        public: bool,
+    ) -> Result<CreatePlaylistResponse, SpotifyError> {
+        let user = self.get_current_user().await?;
+        let url = format!("{}/users/{}/playlists", API_BASE, user.id);
+
+        let mut body = serde_json::json!({
+            "name": name,
+            "public": public,
+        });
+        if let Some(desc) = description {
+            body["description"] = serde_json::json!(desc);
+        }
+
+        let resp = self.api_post(&url, body).await?;
+        let playlist: CreatePlaylistResponse = resp.json().await?;
+        Ok(playlist)
     }
 }

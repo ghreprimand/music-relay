@@ -371,6 +371,66 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
+        ServerCommand::GetPlaybackState { id } => {
+            match spotify.get_playback_state().await {
+                Ok(state) => CommandResponse {
+                    id,
+                    result: Some(serde_json::to_value(&state).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::GetPlaylistTracks { id, playlist_id, offset, limit } => {
+            match spotify.get_playlist_tracks(&playlist_id, offset.unwrap_or(0), limit.unwrap_or(100)).await {
+                Ok(tracks) => CommandResponse {
+                    id,
+                    result: Some(serde_json::to_value(&tracks).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::AddToPlaylist { id, playlist_id, uris, position } => {
+            match spotify.add_to_playlist(&playlist_id, uris, position).await {
+                Ok(snapshot_id) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::RemoveFromPlaylist { id, playlist_id, uris } => {
+            match spotify.remove_from_playlist(&playlist_id, uris).await {
+                Ok(snapshot_id) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::ReplacePlaylist { id, playlist_id, uris } => {
+            match spotify.replace_playlist_tracks(&playlist_id, uris).await {
+                Ok(snapshot_id) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::CreatePlaylist { id, name, description, public } => {
+            match spotify.create_playlist(&name, description.as_deref(), public.unwrap_or(false)).await {
+                Ok(playlist) => CommandResponse {
+                    id,
+                    result: Some(serde_json::to_value(&playlist).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
     }
 }
 

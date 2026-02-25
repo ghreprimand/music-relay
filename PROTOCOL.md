@@ -140,6 +140,169 @@ Returns up to 20 results per request. Search is type `track` only.
 
 Requires Spotify Premium on the DJ's account.
 
+### `get_playback_state`
+
+```json
+{
+  "command": "get_playback_state",
+  "id": "req-005"
+}
+```
+
+**Response result:**
+
+```json
+{
+  "is_playing": true,
+  "progress_ms": 45000,
+  "item": {
+    "id": "4iV5W9uYEdYUVa79Axb7Rh",
+    "name": "Song Name",
+    "uri": "spotify:track:4iV5W9uYEdYUVa79Axb7Rh",
+    "duration_ms": 240000,
+    "artists": [ { "id": "...", "name": "Artist Name" } ],
+    "album": { "id": "...", "name": "Album Name", "images": [ ... ] }
+  },
+  "context": {
+    "type": "playlist",
+    "uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+  },
+  "shuffle_state": false,
+  "device": {
+    "id": "abc123",
+    "name": "My Speaker",
+    "is_active": true
+  }
+}
+```
+
+Returns `null` if no active device (HTTP 204 from Spotify). The `context`, `shuffle_state`, and `device` fields may be `null`.
+
+### `get_playlist_tracks`
+
+```json
+{
+  "command": "get_playlist_tracks",
+  "id": "req-006",
+  "playlist_id": "37i9dQZF1DXcBWIGoYBM5M",
+  "offset": 0,
+  "limit": 50
+}
+```
+
+`offset` defaults to 0, `limit` defaults to 100 (clamped to max 100).
+
+**Response result:**
+
+```json
+{
+  "items": [
+    {
+      "track": {
+        "id": "...",
+        "name": "Track Name",
+        "uri": "spotify:track:...",
+        "duration_ms": 200000,
+        "artists": [ ... ],
+        "album": { ... }
+      }
+    }
+  ],
+  "total": 250
+}
+```
+
+`track` may be `null` for local or unavailable tracks.
+
+### `add_to_playlist`
+
+```json
+{
+  "command": "add_to_playlist",
+  "id": "req-007",
+  "playlist_id": "37i9dQZF1DXcBWIGoYBM5M",
+  "uris": ["spotify:track:4iV5W9uYEdYUVa79Axb7Rh"],
+  "position": 0
+}
+```
+
+`position` is optional (appends to end if omitted). Accepts more than 100 URIs (batched automatically).
+
+**Response result:**
+
+```json
+{
+  "snapshot_id": "MTcsZjM..."
+}
+```
+
+### `remove_from_playlist`
+
+```json
+{
+  "command": "remove_from_playlist",
+  "id": "req-008",
+  "playlist_id": "37i9dQZF1DXcBWIGoYBM5M",
+  "uris": ["spotify:track:4iV5W9uYEdYUVa79Axb7Rh"]
+}
+```
+
+Removes all occurrences of the given URIs. Accepts more than 100 URIs (batched automatically).
+
+**Response result:**
+
+```json
+{
+  "snapshot_id": "MTcsZjM..."
+}
+```
+
+### `replace_playlist`
+
+```json
+{
+  "command": "replace_playlist",
+  "id": "req-009",
+  "playlist_id": "37i9dQZF1DXcBWIGoYBM5M",
+  "uris": ["spotify:track:4iV5W9uYEdYUVa79Axb7Rh", "spotify:track:7tFiyTwD0nx5a1eklYtX2J"]
+}
+```
+
+Replaces all tracks in the playlist. Accepts more than 100 URIs (first 100 via PUT, remaining batched via POST).
+
+**Response result:**
+
+```json
+{
+  "snapshot_id": "MTcsZjM..."
+}
+```
+
+### `create_playlist`
+
+```json
+{
+  "command": "create_playlist",
+  "id": "req-010",
+  "name": "My New Playlist",
+  "description": "Optional description",
+  "public": false
+}
+```
+
+`description` and `public` are optional. `public` defaults to `false`.
+
+**Response result:**
+
+```json
+{
+  "id": "3cEYpjA9oz9GiPac4AsH4n",
+  "external_urls": {
+    "spotify": "https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n"
+  }
+}
+```
+
 ## Client Responses
 
 Every response is published to the channel as Centrifugo publication data. Responses include the original command `id` and either a `result` or `error` field.
@@ -219,8 +382,12 @@ The relay requests these OAuth scopes:
 | Scope | Used By |
 |-------|---------|
 | `user-read-currently-playing` | `get_now_playing`, `get_queue`, now-playing broadcast |
-| `user-read-playback-state` | `get_queue` |
+| `user-read-playback-state` | `get_queue`, `get_playback_state` |
 | `user-modify-playback-state` | `add_to_queue` |
+| `playlist-read-private` | `get_playlist_tracks` |
+| `playlist-read-collaborative` | `get_playlist_tracks` |
+| `playlist-modify-public` | `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist` |
+| `playlist-modify-private` | `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist` |
 
 ## Connection Lifecycle
 

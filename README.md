@@ -68,6 +68,13 @@ The relay subscribes to a Centrifugo channel and listens for commands. When a co
 | `/v1/me/player/queue` | GET | `user-read-currently-playing`, `user-read-playback-state` |
 | `/v1/search?q=...&type=track` | GET | (none beyond valid token) |
 | `/v1/me/player/queue?uri=...` | POST | `user-modify-playback-state` |
+| `/v1/me/player` | GET | `user-read-playback-state` |
+| `/v1/me` | GET | (none beyond valid token) |
+| `/v1/playlists/{id}/tracks` | GET | `playlist-read-private`, `playlist-read-collaborative` |
+| `/v1/playlists/{id}/tracks` | POST | `playlist-modify-public`, `playlist-modify-private` |
+| `/v1/playlists/{id}/tracks` | PUT | `playlist-modify-public`, `playlist-modify-private` |
+| `/v1/playlists/{id}/tracks` | DELETE | `playlist-modify-public`, `playlist-modify-private` |
+| `/v1/users/{id}/playlists` | POST | `playlist-modify-public`, `playlist-modify-private` |
 
 Token refresh happens automatically 60 seconds before expiry. On a 401 response, the client forces a refresh and retries once.
 
@@ -82,12 +89,19 @@ The relay uses typed Rust structs for all Spotify responses. Key types:
 - `NowPlaying` -- `is_playing`, `progress_ms`, `item: Option<Track>`
 - `QueueResponse` -- `currently_playing: Option<Track>`, `queue: Vec<Track>`
 - `SearchResponse` -- `tracks: { items: Vec<Track>, total: u32 }`
+- `PlaybackState` -- `is_playing`, `progress_ms`, `item: Option<Track>`, `context: Option<PlaybackContext>`, `shuffle_state`, `device: Option<Device>`
+- `PlaybackContext` -- `type`, `uri`
+- `Device` -- `id`, `name`, `is_active`
+- `PlaylistTracksResponse` -- `items: Vec<PlaylistItem>`, `total: u32`
+- `PlaylistItem` -- `track: Option<Track>`
+- `CreatePlaylistResponse` -- `id`, `external_urls: ExternalUrls`
+- `UserProfile` -- `id`
 
 ## WebSocket Protocol
 
 See [PROTOCOL.md](PROTOCOL.md) for the full wire format, including:
 
-- Command schemas (`get_now_playing`, `get_queue`, `search`, `add_to_queue`)
+- Command schemas (`get_now_playing`, `get_queue`, `search`, `add_to_queue`, `get_playback_state`, `get_playlist_tracks`, `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist`)
 - Response format (result/error with correlation IDs)
 - Now-playing broadcast format (published on track change)
 - Centrifugo publish wrapper
