@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-shell";
 import { load } from "@tauri-apps/plugin-store";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 
@@ -128,7 +127,7 @@ export default function Settings({ onSaved }: SettingsProps) {
                   className="field-link"
                   onClick={(e) => {
                     e.preventDefault();
-                    open("https://developer.spotify.com/dashboard");
+                    invoke("open_url", { url: "https://developer.spotify.com/dashboard" });
                   }}
                 >
                   Create a Spotify app
