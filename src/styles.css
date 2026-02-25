@@ -106,6 +106,12 @@ input::placeholder {
 .field-link {
   color: #6366f1;
   text-decoration: none;
+  background: none;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  display: inline;
+  padding: 0;
 }
 
 .field-link:hover {
