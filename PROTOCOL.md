@@ -194,7 +194,7 @@ When the currently playing track changes, the client publishes an unsolicited up
 }
 ```
 
-Broadcasts are only sent when the track URI changes, not on every poll tick.
+Broadcasts are sent when the track URI changes, not on every poll tick. A broadcast is also sent when playback stops (all string fields empty, `is_playing: false`).
 
 ## Centrifugo Wire Format
 
