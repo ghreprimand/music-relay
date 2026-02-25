@@ -29,18 +29,30 @@ Launch the app. It opens a settings window on first run.
 
 | Field | Description |
 |-------|-------------|
-| Client ID | The Spotify Client ID from step 1 |
-| WebSocket URL | Server endpoint (`wss://...`) provided by your server admin |
-| Poll Interval | How often to report now-playing state, in seconds (default: 5) |
+| **Client ID** | The Spotify Client ID from step 1 |
+| **WebSocket URL** | Centrifugo endpoint (`wss://...`) provided by your server admin |
+| **Connection Token** | JWT token for authenticating with the WebSocket server |
+| **Channel** | Channel to subscribe to for receiving commands |
+| **Poll Interval** | How often to report now-playing state, in seconds (default: 5) |
 
-Click **Save**. The app minimizes to the system tray and begins connecting.
+Click **Save**. The app authenticates with Spotify (opens your browser on first run) and connects to the server. Once connected it minimizes to the system tray.
 
-## Autostart
+## Preferences
 
-Enable **Launch at startup** in Settings to start Music Relay automatically when you log in.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Launch at startup | Off | Start Music Relay when you log in |
+| Minimize to tray on close | On | Hide the window instead of quitting when you close it |
 
-- **Linux:** creates a `.desktop` entry in `~/.config/autostart/`
-- **Windows:** adds a registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+## How It Works
+
+1. Authenticates with Spotify using OAuth PKCE (localhost redirect on port 18974)
+2. Polls Spotify for the current track at the configured interval
+3. Connects to the remote server via Centrifugo WebSocket
+4. Receives commands (now-playing, queue, search, add to queue) and executes them against the Spotify API
+5. Publishes results back through the WebSocket channel
+
+The refresh token is stored locally so you only need to authorize once. The app reconnects automatically on connection loss with exponential backoff.
 
 ## Configuration
 
