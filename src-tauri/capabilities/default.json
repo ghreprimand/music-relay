@@ -5,12 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    {
-      "identifier": "shell:allow-open",
-      "allow": [
-        { "url": "https://developer.spotify.com/*" }
-      ]
-    },
+    "shell:default",
     "store:default",
     "autostart:default",
     {
