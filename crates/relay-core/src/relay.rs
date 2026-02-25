@@ -1,27 +1,36 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use tauri::{Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_store::StoreExt;
 use tokio::sync::mpsc;
 
 use crate::centrifugo::{self, CentrifugoClient, CommandError, CommandResponse, ServerCommand};
-use crate::config::AppConfig;
+use crate::config::RelayConfig;
 use crate::oauth;
 use crate::spotify::SpotifyClient;
 use crate::state::{AppState, ConnectionStatus, NowPlayingInfo};
+use crate::token;
 
 const MAX_RELAY_RETRIES: u32 = 5;
 
+/// Platform abstraction that decouples relay logic from Tauri or any specific runtime.
+pub trait RelayPlatform: Send + Sync + 'static {
+    fn persist_refresh_token(&self, token: &str);
+    fn get_refresh_token(&self) -> Option<String>;
+    fn clear_refresh_token(&self);
+    fn update_state<F: FnOnce(&mut AppState) + Send>(&self, f: F);
+    fn emit_status(&self);
+    fn notify(&self, title: &str, body: &str);
+    fn present_auth_url(&self, url: &str);
+}
+
 /// Start the background relay task. Returns a shutdown sender to stop it.
-pub fn start_relay(
-    app: tauri::AppHandle,
-    config: AppConfig,
+pub fn start_relay<P: RelayPlatform>(
+    platform: Arc<P>,
+    config: RelayConfig,
 ) -> tokio::sync::watch::Sender<bool> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    tauri::async_runtime::spawn(async move {
+    tokio::spawn(async move {
         let mut attempt: u32 = 0;
         let mut shutdown_rx = shutdown_rx;
         let connected = Arc::new(AtomicBool::new(false));
@@ -33,7 +42,7 @@ pub fn start_relay(
 
             connected.store(false, Ordering::Relaxed);
 
-            match run_relay(app.clone(), config.clone(), shutdown_rx.clone(), connected.clone()).await {
+            match run_relay(&*platform, &config, shutdown_rx.clone(), connected.clone()).await {
                 Ok(()) => return,
                 Err(e) => {
                     // Reset retry counter if the relay had been running successfully
@@ -41,28 +50,29 @@ pub fn start_relay(
                         attempt = 0;
                     }
                     attempt += 1;
-                    log::error!("Relay failed (attempt {}/{}): {}", attempt, MAX_RELAY_RETRIES, e);
+                    log::error!(
+                        "Relay failed (attempt {}/{}): {}",
+                        attempt,
+                        MAX_RELAY_RETRIES,
+                        e
+                    );
 
-                    update_state(&app, |state| {
+                    platform.update_state(|state| {
                         state.last_error = Some(e.to_string());
                         state.spotify_status = ConnectionStatus::Disconnected;
                         state.websocket_status = ConnectionStatus::Disconnected;
                     });
-                    emit_status(&app);
+                    platform.emit_status();
 
                     if attempt >= MAX_RELAY_RETRIES {
                         log::error!("Relay exceeded max retries, giving up");
                         // Clear the bad refresh token so next launch triggers
                         // a fresh OAuth flow instead of repeating the same failure
-                        if let Ok(store) = app.store("config.json") {
-                            let _ = store.delete("spotify_refresh_token");
-                            let _ = store.save();
-                        }
-                        let _ = app.notification()
-                            .builder()
-                            .title("Music Relay — Connection Failed")
-                            .body("Spotify song requests are no longer being relayed. Open Music Relay to reconnect.")
-                            .show();
+                        platform.clear_refresh_token();
+                        platform.notify(
+                            "Music Relay -- Connection Failed",
+                            "Spotify song requests are no longer being relayed. Open Music Relay to reconnect.",
+                        );
                         return;
                     }
 
@@ -83,52 +93,49 @@ pub fn start_relay(
     shutdown_tx
 }
 
-async fn run_relay(
-    app: tauri::AppHandle,
-    config: AppConfig,
+async fn run_relay<P: RelayPlatform>(
+    platform: &P,
+    config: &RelayConfig,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     connected: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Step 1: Authenticate with Spotify
-    update_state(&app, |state| {
+    platform.update_state(|state| {
         state.spotify_status = ConnectionStatus::Connecting;
         state.last_error = None;
     });
-    emit_status(&app);
+    platform.emit_status();
 
-    let tokens = authenticate_spotify(&app, &config).await?;
+    let tokens = authenticate_spotify(platform, config).await?;
 
     let mut spotify = SpotifyClient::new(config.spotify_client_id.clone());
     spotify.set_tokens(&tokens);
 
-    persist_refresh_token(&app, &tokens.refresh_token);
+    platform.persist_refresh_token(&tokens.refresh_token);
 
-    update_state(&app, |state| {
+    platform.update_state(|state| {
         state.spotify_status = ConnectionStatus::Connected;
-        state.spotify_refresh_token = Some(tokens.refresh_token.clone());
     });
-    emit_status(&app);
+    platform.emit_status();
     log::info!("Spotify authenticated");
 
     // Signal that we got past startup -- retry counter will reset on failure
     connected.store(true, Ordering::Relaxed);
 
     // Step 2: Connect to Centrifugo (if configured)
-    let has_websocket = !config.websocket_url.is_empty()
-        && !config.websocket_token.is_empty()
-        && !config.websocket_channel.is_empty();
+    let has_server = !config.server_url.is_empty() && !config.api_key.is_empty();
 
-    if has_websocket {
-        run_with_centrifugo(app, config, &mut spotify, shutdown_rx).await
+    if has_server {
+        run_with_centrifugo(platform, config, &mut spotify, shutdown_rx).await
     } else {
-        run_poll_only(app, config, &mut spotify, shutdown_rx).await
+        run_poll_only(platform, config, &mut spotify, shutdown_rx).await
     }
 }
 
 /// Full mode: Spotify polling + Centrifugo command dispatch.
-async fn run_with_centrifugo(
-    app: tauri::AppHandle,
-    config: AppConfig,
+async fn run_with_centrifugo<P: RelayPlatform>(
+    platform: &P,
+    config: &RelayConfig,
     spotify: &mut SpotifyClient,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -140,22 +147,72 @@ async fn run_with_centrifugo(
             return Ok(());
         }
 
-        update_state(&app, |state| {
+        platform.update_state(|state| {
             state.websocket_status = ConnectionStatus::Connecting;
         });
-        emit_status(&app);
+        platform.emit_status();
 
-        let client = CentrifugoClient::new(
-            config.websocket_url.clone(),
-            config.websocket_token.clone(),
-            config.websocket_channel.clone(),
-        );
+        // Fetch fresh token and derive connection params on every connect/reconnect
+        let (ws_url, centrifugo_token, channel) = match token::fetch_connection_params(
+            &config.server_url,
+            &config.api_key,
+        )
+        .await
+        {
+            Ok(params) => params,
+            Err(e) => {
+                log::warn!("Token fetch failed: {}", e);
+                platform.update_state(|state| {
+                    state.websocket_status = ConnectionStatus::Disconnected;
+                    state.last_error = Some(format!("Token: {}", e));
+                });
+                platform.emit_status();
+
+                let delay = centrifugo::backoff_delay(reconnect_attempt);
+                reconnect_attempt += 1;
+                log::info!("Reconnecting in {:?}", delay);
+
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => continue,
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() { return Ok(()); }
+                    }
+                }
+                continue;
+            }
+        };
+
+        // Schedule a proactive reconnect 1 hour before the token expires.
+        // This avoids the brief disconnect when Centrifugo drops us at expiry.
+        let token_refresh_deadline = match token::token_expiry(&centrifugo_token) {
+            Some(exp) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let refresh_at = exp.saturating_sub(3600);
+                if refresh_at > now {
+                    let secs = refresh_at - now;
+                    log::info!("Token expires in {}h, will refresh in {}h", (exp - now) / 3600, secs / 3600);
+                    Some(tokio::time::Instant::now() + std::time::Duration::from_secs(secs))
+                } else {
+                    log::warn!("Token expiry is already within the refresh window, no proactive refresh scheduled");
+                    None
+                }
+            }
+            None => {
+                log::warn!("Could not determine token expiry, proactive refresh disabled");
+                None
+            }
+        };
+
+        let client = CentrifugoClient::new(ws_url, centrifugo_token, channel);
 
         let (command_tx, mut command_rx) = mpsc::channel::<ServerCommand>(32);
         let (response_tx, response_rx) = mpsc::channel::<CommandResponse>(32);
 
         let ws_shutdown = shutdown_rx.clone();
-        let ws_handle = tauri::async_runtime::spawn(async move {
+        let ws_handle = tokio::spawn(async move {
             client.connect_and_run(command_tx, response_rx, ws_shutdown).await
         });
 
@@ -163,18 +220,17 @@ async fn run_with_centrifugo(
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         // Check if command_rx is already closed (connection failed immediately)
-        // We do this by trying a non-blocking recv
         match command_rx.try_recv() {
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 // The WebSocket task ended - get the error
                 let result = ws_handle.await.map_err(|e| e.to_string())?;
                 if let Err(e) = result {
                     log::warn!("Centrifugo connection failed: {}", e);
-                    update_state(&app, |state| {
+                    platform.update_state(|state| {
                         state.websocket_status = ConnectionStatus::Disconnected;
                         state.last_error = Some(format!("WebSocket: {}", e));
                     });
-                    emit_status(&app);
+                    platform.emit_status();
 
                     let delay = centrifugo::backoff_delay(reconnect_attempt);
                     reconnect_attempt += 1;
@@ -197,11 +253,11 @@ async fn run_with_centrifugo(
         }
 
         reconnect_attempt = 0;
-        update_state(&app, |state| {
+        platform.update_state(|state| {
             state.websocket_status = ConnectionStatus::Connected;
             state.last_error = None;
         });
-        emit_status(&app);
+        platform.emit_status();
         log::info!("Centrifugo connected");
 
         // Run the combined poll + command loop
@@ -212,7 +268,7 @@ async fn run_with_centrifugo(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let broadcast = poll_now_playing(&app, spotify, &mut last_track_uri).await;
+                    let broadcast = poll_now_playing(platform, spotify, &mut last_track_uri).await;
                     if let Some(data) = broadcast {
                         let msg = CommandResponse {
                             id: String::new(),
@@ -232,7 +288,7 @@ async fn run_with_centrifugo(
                     match cmd {
                         Some(cmd) => {
                             let resp = handle_command(spotify, cmd).await;
-                            persist_if_refreshed(&app, spotify);
+                            persist_if_refreshed(platform, spotify);
                             if response_tx.send(resp).await.is_err() {
                                 log::warn!("Response channel closed, WebSocket likely disconnected");
                                 break;
@@ -245,24 +301,34 @@ async fn run_with_centrifugo(
                         }
                     }
                 }
+                _ = async {
+                    match token_refresh_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    log::info!("Token approaching expiry, proactively reconnecting");
+                    break;
+                }
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
-                        update_state(&app, |state| {
+                        platform.update_state(|state| {
                             state.spotify_status = ConnectionStatus::Disconnected;
                             state.websocket_status = ConnectionStatus::Disconnected;
                         });
-                        emit_status(&app);
+                        platform.emit_status();
                         return Ok(());
                     }
                 }
             }
         }
 
-        // If we get here, the WebSocket disconnected. Clean up and reconnect.
-        update_state(&app, |state| {
+        // If we get here, the WebSocket disconnected (or token refresh triggered).
+        // Clean up and reconnect.
+        platform.update_state(|state| {
             state.websocket_status = ConnectionStatus::Disconnected;
         });
-        emit_status(&app);
+        platform.emit_status();
 
         let delay = centrifugo::backoff_delay(reconnect_attempt);
         reconnect_attempt += 1;
@@ -278,13 +344,13 @@ async fn run_with_centrifugo(
 }
 
 /// Spotify-only mode: just poll now-playing without a WebSocket connection.
-async fn run_poll_only(
-    app: tauri::AppHandle,
-    config: AppConfig,
+async fn run_poll_only<P: RelayPlatform>(
+    platform: &P,
+    config: &RelayConfig,
     spotify: &mut SpotifyClient,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    log::info!("Running in poll-only mode (no WebSocket configured)");
+    log::info!("Running in poll-only mode (no server configured)");
 
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs.max(1));
     let mut interval = tokio::time::interval(poll_interval);
@@ -293,16 +359,16 @@ async fn run_poll_only(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                poll_now_playing(&app, spotify, &mut last_track_uri).await;
-                persist_if_refreshed(&app, spotify);
+                poll_now_playing(platform, spotify, &mut last_track_uri).await;
+                persist_if_refreshed(platform, spotify);
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     log::info!("Relay shutdown requested");
-                    update_state(&app, |state| {
+                    platform.update_state(|state| {
                         state.spotify_status = ConnectionStatus::Disconnected;
                     });
-                    emit_status(&app);
+                    platform.emit_status();
                     return Ok(());
                 }
             }
@@ -312,8 +378,8 @@ async fn run_poll_only(
 
 /// Poll Spotify for now-playing. Returns Some(info) when the track changes
 /// (for broadcasting over WebSocket).
-async fn poll_now_playing(
-    app: &tauri::AppHandle,
+async fn poll_now_playing<P: RelayPlatform>(
+    platform: &P,
     spotify: &mut SpotifyClient,
     last_track_uri: &mut Option<String>,
 ) -> Option<NowPlayingInfo> {
@@ -340,13 +406,13 @@ async fn poll_now_playing(
             let changed = current_uri != *last_track_uri;
             *last_track_uri = current_uri;
 
-            update_state(app, |state| {
+            platform.update_state(|state| {
                 state.now_playing = info.clone();
             });
-            emit_status(app);
+            platform.emit_status();
 
             if let Some(token) = spotify.take_refreshed_token() {
-                persist_refresh_token(app, &token);
+                platform.persist_refresh_token(&token);
             }
 
             if changed { info } else { None }
@@ -354,10 +420,10 @@ async fn poll_now_playing(
         Ok(None) => {
             let changed = last_track_uri.is_some();
             *last_track_uri = None;
-            update_state(app, |state| {
+            platform.update_state(|state| {
                 state.now_playing = None;
             });
-            emit_status(app);
+            platform.emit_status();
             if changed {
                 // Broadcast that playback stopped
                 Some(NowPlayingInfo {
@@ -376,10 +442,10 @@ async fn poll_now_playing(
         }
         Err(e) => {
             log::warn!("Failed to get now playing: {}", e);
-            update_state(app, |state| {
+            platform.update_state(|state| {
                 state.last_error = Some(format!("Spotify: {}", e));
             });
-            emit_status(app);
+            platform.emit_status();
             None
         }
     }
@@ -517,18 +583,11 @@ fn error_response(id: String, code: &str, message: &str) -> CommandResponse {
     }
 }
 
-async fn authenticate_spotify(
-    app: &tauri::AppHandle,
-    config: &AppConfig,
+async fn authenticate_spotify<P: RelayPlatform>(
+    platform: &P,
+    config: &RelayConfig,
 ) -> Result<oauth::OAuthTokens, Box<dyn std::error::Error + Send + Sync>> {
-    let existing_refresh = {
-        let store = app.store("config.json").map_err(|e| e.to_string())?;
-        store
-            .get("spotify_refresh_token")
-            .and_then(|v| v.as_str().map(String::from))
-    };
-
-    if let Some(refresh_token) = existing_refresh {
+    if let Some(refresh_token) = platform.get_refresh_token() {
         log::info!("Found existing refresh token, attempting refresh");
         match oauth::refresh_access_token(&config.spotify_client_id, &refresh_token).await {
             Ok(tokens) => {
@@ -545,44 +604,19 @@ async fn authenticate_spotify(
     }
 
     // No stored refresh token -- first-time setup, requires browser interaction
-    let tokens = oauth::start_oauth_flow(&config.spotify_client_id, &config.redirect_uri)
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+    let tokens = oauth::start_oauth_flow(
+        &config.spotify_client_id,
+        &config.redirect_uri,
+        |url| platform.present_auth_url(url),
+    )
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
 
     Ok(tokens)
 }
 
-fn persist_refresh_token(app: &tauri::AppHandle, refresh_token: &str) {
-    if let Ok(store) = app.store("config.json") {
-        let _ = store.set("spotify_refresh_token", serde_json::json!(refresh_token));
-        let _ = store.save();
-    }
-}
-
-fn persist_if_refreshed(app: &tauri::AppHandle, spotify: &mut SpotifyClient) {
+fn persist_if_refreshed<P: RelayPlatform>(platform: &P, spotify: &mut SpotifyClient) {
     if let Some(token) = spotify.take_refreshed_token() {
-        persist_refresh_token(app, &token);
-    }
-}
-
-fn update_state<F: FnOnce(&mut AppState)>(app: &tauri::AppHandle, f: F) {
-    if let Some(state) = app.try_state::<Mutex<AppState>>() {
-        if let Ok(mut state) = state.lock() {
-            f(&mut state);
-        }
-    }
-}
-
-fn emit_status(app: &tauri::AppHandle) {
-    if let Some(state) = app.try_state::<Mutex<AppState>>() {
-        if let Ok(state) = state.lock() {
-            let payload = serde_json::json!({
-                "spotify": state.spotify_status,
-                "websocket": state.websocket_status,
-                "now_playing": state.now_playing,
-                "last_error": state.last_error,
-            });
-            let _ = app.emit("status-changed", payload);
-        }
+        platform.persist_refresh_token(&token);
     }
 }

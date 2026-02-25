@@ -10,25 +10,6 @@ const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const SCOPES: &str = "user-read-currently-playing user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private";
 const CALLBACK_TIMEOUT_SECS: u64 = 120;
 
-/// Open a URL in the system browser. On Linux, spawns xdg-open with
-/// LD_LIBRARY_PATH removed so it works inside AppImage bundles.
-fn open_browser(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .env_remove("LD_LIBRARY_PATH")
-            .env_remove("GIO_LAUNCHED_DESKTOP_FILE")
-            .spawn()?;
-        return Ok(());
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        open::that(url)?;
-        Ok(())
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum OAuthError {
     #[error("Authorization failed: {0}")]
@@ -260,19 +241,20 @@ pub async fn refresh_access_token(
     })
 }
 
-/// Run the full OAuth PKCE flow: open browser, wait for callback, exchange code.
+/// Run the full OAuth PKCE flow: present auth URL, wait for callback, exchange code.
+/// The `present_url` callback is called with the authorization URL -- the platform
+/// decides how to show it (open browser, print to console, etc.).
 pub async fn start_oauth_flow(
     client_id: &str,
     redirect_uri: &str,
+    present_url: impl FnOnce(&str) + Send,
 ) -> Result<OAuthTokens, OAuthError> {
     let (verifier, challenge) = generate_pkce();
     let state = generate_state();
     let auth_url = build_auth_url(client_id, redirect_uri, &challenge, &state);
 
-    log::info!("Opening browser for Spotify authorization");
-    open_browser(&auth_url).map_err(|e| {
-        OAuthError::AuthorizationFailed(format!("Failed to open browser: {}", e))
-    })?;
+    log::info!("Presenting Spotify authorization URL");
+    present_url(&auth_url);
 
     log::info!("Waiting for OAuth callback on 127.0.0.1:18974");
     let code = wait_for_callback(&state).await?;
