@@ -53,20 +53,31 @@ function formatNowPlaying(np: NowPlayingInfo | null): string {
 
 export default function Status({ onOpenSettings }: StatusProps) {
   const [status, setStatus] = useState<StatusData | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
-    // Initial fetch
     invoke<StatusData>("get_status").then(setStatus);
 
-    // Listen for live updates from the relay
     const unlisten = listen<StatusData>("status-changed", (event) => {
       setStatus(event.payload);
+      setReconnecting(false);
     });
 
     return () => {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  function handleReconnect() {
+    setReconnecting(true);
+    invoke("restart_relay").catch(() => setReconnecting(false));
+  }
+
+  const showReconnect =
+    status &&
+    !reconnecting &&
+    (status.last_error ||
+      (status.spotify === "Disconnected" && status.websocket === "Disconnected"));
 
   return (
     <div className="container">
@@ -113,6 +124,23 @@ export default function Status({ onOpenSettings }: StatusProps) {
           {status.last_error && (
             <div className="card error-card">
               <div className="error-text">{status.last_error}</div>
+            </div>
+          )}
+
+          {showReconnect && (
+            <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
+              <button
+                className="btn btn-primary"
+                onClick={handleReconnect}
+              >
+                Reconnect
+              </button>
+            </div>
+          )}
+
+          {reconnecting && (
+            <div style={{ marginTop: 12, textAlign: "center" }}>
+              <span className="muted">Reconnecting...</span>
             </div>
           )}
         </>

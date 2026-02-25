@@ -6,7 +6,7 @@ mod spotify;
 mod state;
 
 use config::AppConfig;
-use state::AppState;
+use state::{AppState, ConnectionStatus};
 use std::sync::Mutex;
 use tauri::{
     image::Image,
@@ -67,6 +67,32 @@ fn reload_config(
 }
 
 #[tauri::command]
+fn restart_relay(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<(), String> {
+    let config = {
+        let mut state = state.lock().map_err(|e| e.to_string())?;
+        // Stop existing relay
+        if let Some(tx) = state.relay_shutdown.take() {
+            let _ = tx.send(true);
+        }
+        state.last_error = None;
+        state.spotify_status = ConnectionStatus::Disconnected;
+        state.websocket_status = ConnectionStatus::Disconnected;
+        state.config.clone()
+    };
+
+    if config.is_configured() {
+        let shutdown_tx = relay::start_relay(app, config);
+        let mut state = state.lock().map_err(|e| e.to_string())?;
+        state.relay_shutdown = Some(shutdown_tx);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn get_close_to_tray(state: tauri::State<'_, Mutex<AppState>>) -> Result<bool, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     Ok(state.config.close_to_tray)
@@ -87,7 +113,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .item(&quit)
         .build()?;
 
-    let _tray = TrayIconBuilder::new()
+    let _tray = TrayIconBuilder::with_id("main")
         .icon(Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to decode tray icon"))
         .tooltip("Music Relay")
         .menu(&menu)
@@ -223,6 +249,7 @@ pub fn run() {
             get_config_status,
             get_close_to_tray,
             reload_config,
+            restart_relay,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run application");
