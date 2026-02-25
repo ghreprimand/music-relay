@@ -37,7 +37,7 @@ Music Relay (desktop or headless)
 Spotify Web API
 ```
 
-The relay fetches a short-lived Centrifugo JWT from the server's token endpoint, derives the channel name from the JWT's `sub` claim, connects to the Centrifugo WebSocket, and subscribes to its relay channel. When a command arrives (e.g. search, add to queue, manage playlists), the relay executes it against the Spotify API and publishes the result back to the same channel. The relay also proactively broadcasts now-playing state whenever the track changes.
+The relay fetches a short-lived Centrifugo JWT, channel name, and WebSocket URL from the server's token endpoint, connects to the Centrifugo WebSocket, and subscribes to its relay channel. When a command arrives (e.g. search, add to queue, manage playlists), the relay executes it against the Spotify API and publishes the result back to the same channel. The relay also proactively broadcasts now-playing state whenever the track changes.
 
 ### Project Structure (Cargo Workspace)
 
@@ -55,8 +55,8 @@ music-relay/
 
 | Module | Responsibility |
 |--------|---------------|
-| `config.rs` | `RelayConfig` struct: server URL, API key, Spotify client ID, poll interval, environment |
-| `token.rs` | Fetch Centrifugo JWT from server, decode JWT claims, extract user ID from `sub`, derive channel name, derive WebSocket URL from server URL |
+| `config.rs` | `RelayConfig` struct: server URL, API key, Spotify client ID, poll interval |
+| `token.rs` | Fetch Centrifugo JWT, channel, and WebSocket URL from server token endpoint; decode JWT `exp` claim for proactive refresh |
 | `relay.rs` | `RelayPlatform` trait for platform abstraction; background orchestrator: authenticates Spotify, fetches Centrifugo token, connects WebSocket, runs poll loop, dispatches commands, retries with backoff, proactive token refresh before expiry |
 | `oauth.rs` | Spotify PKCE flow: code verifier/challenge generation, localhost callback listener (port 18974), token exchange, token refresh. Platform-agnostic via `present_url` callback |
 | `spotify.rs` | Spotify Web API client (GET/POST/PUT/DELETE) with typed request/response structs, automatic token refresh, 401 retry, 15s request timeout, URI batching for playlist operations |
@@ -205,9 +205,8 @@ On first run, the headless binary prompts interactively for `server_url`, `api_k
 The relay no longer uses a static Centrifugo JWT. Instead, it dynamically fetches a short-lived token from the server on every connection and reconnection:
 
 1. `GET {server_url}/api/connector/token` with `Authorization: Bearer {api_key}`
-2. Server responds with `{ "token": "eyJ...", "channel": "..." }` (JWT typically 24h TTL, plus the channel to subscribe to)
-3. WebSocket URL is derived: `{server_url}` with scheme `https://` -> `wss://`, appending `/connection/websocket`
-4. Relay connects to Centrifugo with the fresh token and subscribes to the returned channel
+2. Server responds with `{ "token": "eyJ...", "channel": "...", "websocket_url": "wss://..." }` (JWT typically 24h TTL, plus the channel and WebSocket URL)
+3. Relay connects to the returned WebSocket URL with the fresh token and subscribes to the returned channel
 
 ### Proactive Token Refresh
 
@@ -221,9 +220,8 @@ To avoid a brief disconnect when the token expires server-side, the relay decode
 2. If configured, spawn relay background task:
    a. Check for stored refresh token and attempt silent Spotify token refresh
    b. If no stored token (first run), present OAuth URL for authorization
-   c. Fetch Centrifugo token from server (if server configured)
-   d. Derive channel and WebSocket URL from the token
-   e. Connect to Centrifugo and subscribe to the relay channel
+   c. Fetch Centrifugo token, channel, and WebSocket URL from server (if server configured)
+   d. Connect to Centrifugo and subscribe to the relay channel
    f. Begin polling Spotify at the configured interval
 3. Desktop: emit `status-changed` events to frontend on each state transition
    Headless: log status transitions to stdout
@@ -324,7 +322,7 @@ cargo run -p relay-headless              # development mode
 cargo build --release -p relay-headless  # production build
 
 # Cross-compile headless for ARM64
-cargo install cross --git https://github.com/cross-rs/cross
+cargo install cross
 cross build --release --target aarch64-unknown-linux-gnu -p relay-headless
 ```
 
