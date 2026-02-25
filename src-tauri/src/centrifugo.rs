@@ -1,5 +1,12 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+
+const MAX_BACKOFF_SECS: u64 = 30;
 
 #[derive(Debug, Error)]
 pub enum CentrifugoError {
@@ -9,9 +16,101 @@ pub enum CentrifugoError {
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("Connect rejected: {0}")]
+    ConnectRejected(String),
+    #[error("Subscribe rejected: {0}")]
+    SubscribeRejected(String),
+    #[error("Connection closed")]
+    Closed,
+}
+
+// -- Wire protocol types --
+
+#[derive(Debug, Serialize)]
+struct Command {
+    id: u32,
+    #[serde(flatten)]
+    method: CommandMethod,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CommandMethod {
+    Connect(ConnectRequest),
+    Subscribe(SubscribeRequest),
+    Publish(PublishRequest),
+}
+
+#[derive(Debug, Serialize)]
+struct ConnectRequest {
+    token: String,
+    name: String,
+    version: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SubscribeRequest {
+    channel: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PublishRequest {
+    channel: String,
+    data: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct Reply {
+    #[serde(default)]
+    id: u32,
+    #[serde(default)]
+    connect: Option<ConnectResult>,
+    #[serde(default)]
+    subscribe: Option<serde_json::Value>,
+    #[serde(default)]
+    publish: Option<serde_json::Value>,
+    #[serde(default)]
+    error: Option<ProtoError>,
+    #[serde(default)]
+    push: Option<Push>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectResult {
+    #[serde(default)]
+    client: String,
+    #[serde(default)]
+    ping: Option<u32>,
+    #[serde(default)]
+    pong: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtoError {
+    #[serde(default)]
+    code: u32,
+    #[serde(default)]
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct Push {
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default, rename = "pub")]
+    publication: Option<Publication>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Publication {
+    data: serde_json::Value,
+}
+
+// -- Application-level command/response types --
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "command")]
 pub enum ServerCommand {
     #[serde(rename = "get_now_playing")]
@@ -24,7 +123,7 @@ pub enum ServerCommand {
     AddToQueue { id: String, track_uri: String },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CommandResponse {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,23 +132,221 @@ pub struct CommandResponse {
     pub error: Option<CommandError>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CommandError {
     pub code: String,
     pub message: String,
 }
 
+// -- Client --
+
 pub struct CentrifugoClient {
-    _url: String,
+    url: String,
+    token: String,
+    channel: String,
+    next_id: AtomicU32,
 }
 
 impl CentrifugoClient {
-    pub fn new(url: String) -> Self {
-        Self { _url: url }
+    pub fn new(url: String, token: String, channel: String) -> Self {
+        Self {
+            url,
+            token,
+            channel,
+            next_id: AtomicU32::new(1),
+        }
     }
 
-    /// Connect to the WebSocket server and process commands in a loop.
-    pub async fn connect_and_run(&self) -> Result<(), CentrifugoError> {
-        todo!("implement WebSocket connection and command loop")
+    fn next_id(&self) -> u32 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
+
+    /// Connect and run the message loop. Incoming server commands are sent
+    /// through `command_tx`. Responses to publish back are read from `response_rx`.
+    /// Returns on connection loss (caller should reconnect).
+    pub async fn connect_and_run(
+        &self,
+        command_tx: mpsc::Sender<ServerCommand>,
+        mut response_rx: mpsc::Receiver<CommandResponse>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), CentrifugoError> {
+        log::info!("Connecting to Centrifugo at {}", self.url);
+
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&self.url)
+            .await
+            .map_err(|e| CentrifugoError::ConnectionFailed(e.to_string()))?;
+
+        let (mut write, mut read) = ws_stream.split();
+
+        // Send connect command
+        let connect_cmd = Command {
+            id: self.next_id(),
+            method: CommandMethod::Connect(ConnectRequest {
+                token: self.token.clone(),
+                name: "music-relay".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            }),
+        };
+        let connect_json = serde_json::to_string(&connect_cmd)?;
+        write.send(Message::Text(connect_json)).await?;
+
+        // Read connect reply
+        let connect_reply = read_reply(&mut read).await?;
+        if let Some(err) = connect_reply.error {
+            return Err(CentrifugoError::ConnectRejected(format!(
+                "code {}: {}",
+                err.code, err.message
+            )));
+        }
+
+        let ping_interval = connect_reply
+            .connect
+            .as_ref()
+            .and_then(|c| c.ping)
+            .unwrap_or(25);
+        let send_pong = connect_reply
+            .connect
+            .as_ref()
+            .and_then(|c| c.pong)
+            .unwrap_or(false);
+
+        log::info!(
+            "Connected to Centrifugo (client: {})",
+            connect_reply
+                .connect
+                .as_ref()
+                .map(|c| c.client.as_str())
+                .unwrap_or("unknown")
+        );
+
+        // Subscribe to channel
+        let sub_cmd = Command {
+            id: self.next_id(),
+            method: CommandMethod::Subscribe(SubscribeRequest {
+                channel: self.channel.clone(),
+            }),
+        };
+        let sub_json = serde_json::to_string(&sub_cmd)?;
+        write.send(Message::Text(sub_json)).await?;
+
+        let sub_reply = read_reply(&mut read).await?;
+        if let Some(err) = sub_reply.error {
+            return Err(CentrifugoError::SubscribeRejected(format!(
+                "code {}: {}",
+                err.code, err.message
+            )));
+        }
+
+        log::info!("Subscribed to channel: {}", self.channel);
+
+        // Message loop
+        let ping_timeout = std::time::Duration::from_secs((ping_interval as u64) * 2);
+        let mut ping_deadline = tokio::time::Instant::now() + ping_timeout;
+
+        loop {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            ping_deadline = tokio::time::Instant::now() + ping_timeout;
+
+                            // Handle ping (empty JSON object)
+                            let trimmed = text.trim();
+                            if trimmed == "{}" {
+                                if send_pong {
+                                    write.send(Message::Text("{}".to_string())).await?;
+                                }
+                                continue;
+                            }
+
+                            // Parse as reply
+                            if let Ok(reply) = serde_json::from_str::<Reply>(trimmed) {
+                                if let Some(push) = reply.push {
+                                    if let Some(pub_data) = push.publication {
+                                        // Try to parse as a server command
+                                        match serde_json::from_value::<ServerCommand>(pub_data.data.clone()) {
+                                            Ok(cmd) => {
+                                                if command_tx.send(cmd).await.is_err() {
+                                                    log::warn!("Command channel closed");
+                                                    return Ok(());
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::warn!("Failed to parse server command: {} - data: {}", e, pub_data.data);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            log::info!("WebSocket closed by server");
+                            return Err(CentrifugoError::Closed);
+                        }
+                        Some(Ok(Message::Ping(data))) => {
+                            write.send(Message::Pong(data)).await?;
+                            ping_deadline = tokio::time::Instant::now() + ping_timeout;
+                        }
+                        Some(Err(e)) => {
+                            return Err(CentrifugoError::WebSocket(e));
+                        }
+                        None => {
+                            return Err(CentrifugoError::Closed);
+                        }
+                        _ => {}
+                    }
+                }
+                resp = response_rx.recv() => {
+                    if let Some(resp) = resp {
+                        let publish_cmd = Command {
+                            id: self.next_id(),
+                            method: CommandMethod::Publish(PublishRequest {
+                                channel: self.channel.clone(),
+                                data: serde_json::to_value(&resp)?,
+                            }),
+                        };
+                        let json = serde_json::to_string(&publish_cmd)?;
+                        write.send(Message::Text(json)).await?;
+                    }
+                }
+                _ = tokio::time::sleep_until(ping_deadline) => {
+                    log::warn!("Ping timeout, disconnecting");
+                    return Err(CentrifugoError::Closed);
+                }
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        log::info!("Centrifugo shutdown requested");
+                        let _ = write.close().await;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn read_reply<S>(read: &mut S) -> Result<Reply, CentrifugoError>
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        match read.next().await {
+            Some(Ok(Message::Text(text))) => {
+                let reply: Reply = serde_json::from_str(&text)?;
+                return Ok(reply);
+            }
+            Some(Ok(Message::Ping(_))) => continue,
+            Some(Ok(Message::Close(_))) | None => {
+                return Err(CentrifugoError::Closed);
+            }
+            Some(Err(e)) => return Err(CentrifugoError::WebSocket(e)),
+            _ => continue,
+        }
+    }
+}
+
+/// Calculate exponential backoff delay for reconnection attempts.
+pub fn backoff_delay(attempt: u32) -> std::time::Duration {
+    let secs = (2u64.pow(attempt.min(5))).min(MAX_BACKOFF_SECS);
+    std::time::Duration::from_secs(secs)
 }
