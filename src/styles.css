@@ -157,6 +157,15 @@ input.input-error:focus {
   transition: background-color 0.15s;
 }
 
+.btn-secondary {
+  background: #2a2a3a;
+  color: #ccc;
+}
+
+.btn-secondary:hover {
+  background: #353548;
+}
+
 .btn-primary {
   background: #6366f1;
   color: #fff;

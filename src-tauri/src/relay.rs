@@ -1,6 +1,8 @@
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_store::StoreExt;
 use tokio::sync::mpsc;
 
@@ -10,6 +12,8 @@ use crate::oauth;
 use crate::spotify::SpotifyClient;
 use crate::state::{AppState, ConnectionStatus, NowPlayingInfo};
 
+const MAX_RELAY_RETRIES: u32 = 5;
+
 /// Start the background relay task. Returns a shutdown sender to stop it.
 pub fn start_relay(
     app: tauri::AppHandle,
@@ -18,14 +22,61 @@ pub fn start_relay(
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = run_relay(app.clone(), config, shutdown_rx).await {
-            log::error!("Relay task failed: {}", e);
-            update_state(&app, |state| {
-                state.last_error = Some(e.to_string());
-                state.spotify_status = ConnectionStatus::Disconnected;
-                state.websocket_status = ConnectionStatus::Disconnected;
-            });
-            emit_status(&app);
+        let mut attempt: u32 = 0;
+        let mut shutdown_rx = shutdown_rx;
+        let connected = Arc::new(AtomicBool::new(false));
+
+        loop {
+            if *shutdown_rx.borrow() {
+                return;
+            }
+
+            connected.store(false, Ordering::Relaxed);
+
+            match run_relay(app.clone(), config.clone(), shutdown_rx.clone(), connected.clone()).await {
+                Ok(()) => return,
+                Err(e) => {
+                    // Reset retry counter if the relay had been running successfully
+                    if connected.load(Ordering::Relaxed) {
+                        attempt = 0;
+                    }
+                    attempt += 1;
+                    log::error!("Relay failed (attempt {}/{}): {}", attempt, MAX_RELAY_RETRIES, e);
+
+                    update_state(&app, |state| {
+                        state.last_error = Some(e.to_string());
+                        state.spotify_status = ConnectionStatus::Disconnected;
+                        state.websocket_status = ConnectionStatus::Disconnected;
+                    });
+                    emit_status(&app);
+
+                    if attempt >= MAX_RELAY_RETRIES {
+                        log::error!("Relay exceeded max retries, giving up");
+                        // Clear the bad refresh token so next launch triggers
+                        // a fresh OAuth flow instead of repeating the same failure
+                        if let Ok(store) = app.store("config.json") {
+                            let _ = store.delete("spotify_refresh_token");
+                            let _ = store.save();
+                        }
+                        let _ = app.notification()
+                            .builder()
+                            .title("Music Relay — Connection Failed")
+                            .body("Spotify song requests are no longer being relayed. Open Music Relay to reconnect.")
+                            .show();
+                        return;
+                    }
+
+                    let delay = centrifugo::backoff_delay(attempt - 1);
+                    log::info!("Retrying relay in {:?}", delay);
+
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() { return; }
+                        }
+                    }
+                }
+            }
         }
     });
 
@@ -36,6 +87,7 @@ async fn run_relay(
     app: tauri::AppHandle,
     config: AppConfig,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    connected: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Step 1: Authenticate with Spotify
     update_state(&app, |state| {
@@ -57,6 +109,9 @@ async fn run_relay(
     });
     emit_status(&app);
     log::info!("Spotify authenticated");
+
+    // Signal that we got past startup -- retry counter will reset on failure
+    connected.store(true, Ordering::Relaxed);
 
     // Step 2: Connect to Centrifugo (if configured)
     let has_websocket = !config.websocket_url.is_empty()
@@ -177,6 +232,7 @@ async fn run_with_centrifugo(
                     match cmd {
                         Some(cmd) => {
                             let resp = handle_command(spotify, cmd).await;
+                            persist_if_refreshed(&app, spotify);
                             if response_tx.send(resp).await.is_err() {
                                 log::warn!("Response channel closed, WebSocket likely disconnected");
                                 break;
@@ -238,6 +294,7 @@ async fn run_poll_only(
         tokio::select! {
             _ = interval.tick() => {
                 poll_now_playing(&app, spotify, &mut last_track_uri).await;
+                persist_if_refreshed(&app, spotify);
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -288,9 +345,8 @@ async fn poll_now_playing(
             });
             emit_status(app);
 
-            // Persist refreshed token if applicable
-            if let Ok(Some(new_tokens)) = spotify.ensure_token().await {
-                persist_refresh_token(app, &new_tokens.refresh_token);
+            if let Some(token) = spotify.take_refreshed_token() {
+                persist_refresh_token(app, &token);
             }
 
             if changed { info } else { None }
@@ -329,7 +385,23 @@ async fn poll_now_playing(
     }
 }
 
+fn command_name(cmd: &ServerCommand) -> &'static str {
+    match cmd {
+        ServerCommand::GetNowPlaying { .. } => "get_now_playing",
+        ServerCommand::GetQueue { .. } => "get_queue",
+        ServerCommand::Search { .. } => "search",
+        ServerCommand::AddToQueue { .. } => "add_to_queue",
+        ServerCommand::GetPlaybackState { .. } => "get_playback_state",
+        ServerCommand::GetPlaylistTracks { .. } => "get_playlist_tracks",
+        ServerCommand::AddToPlaylist { .. } => "add_to_playlist",
+        ServerCommand::RemoveFromPlaylist { .. } => "remove_from_playlist",
+        ServerCommand::ReplacePlaylist { .. } => "replace_playlist",
+        ServerCommand::CreatePlaylist { .. } => "create_playlist",
+    }
+}
+
 async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> CommandResponse {
+    log::info!("Handling command: {}", command_name(&cmd));
     match cmd {
         ServerCommand::GetNowPlaying { id } => {
             match spotify.get_now_playing().await {
@@ -464,11 +536,15 @@ async fn authenticate_spotify(
                 return Ok(tokens);
             }
             Err(e) => {
-                log::warn!("Token refresh failed ({}), starting fresh OAuth flow", e);
+                // Return the error instead of falling back to browser OAuth.
+                // The retry loop will handle transient failures, and if the
+                // refresh token is truly revoked the user will see the error.
+                return Err(format!("Token refresh failed: {}", e).into());
             }
         }
     }
 
+    // No stored refresh token -- first-time setup, requires browser interaction
     let tokens = oauth::start_oauth_flow(&config.spotify_client_id, &config.redirect_uri)
         .await
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
@@ -480,6 +556,12 @@ fn persist_refresh_token(app: &tauri::AppHandle, refresh_token: &str) {
     if let Ok(store) = app.store("config.json") {
         let _ = store.set("spotify_refresh_token", serde_json::json!(refresh_token));
         let _ = store.save();
+    }
+}
+
+fn persist_if_refreshed(app: &tauri::AppHandle, spotify: &mut SpotifyClient) {
+    if let Some(token) = spotify.take_refreshed_token() {
+        persist_refresh_token(app, &token);
     }
 }
 

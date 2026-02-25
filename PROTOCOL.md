@@ -395,3 +395,5 @@ The relay requests these OAuth scopes:
 - Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped)
 - Backoff resets on successful connection
 - Spotify token refreshes automatically before expiry (60s buffer)
+- Relay-level failures (auth errors, network outages) retry up to 5 times before giving up
+- On permanent failure, a system notification is shown and the stored refresh token is cleared

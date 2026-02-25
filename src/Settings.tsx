@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -7,6 +7,16 @@ const REDIRECT_URI = "http://127.0.0.1:18974/callback";
 
 interface SettingsProps {
   onSaved: () => void;
+  onCancel?: () => void;
+}
+
+interface StoredConfig {
+  websocketUrl: string;
+  websocketToken: string;
+  websocketChannel: string;
+  spotifyClientId: string;
+  pollInterval: number;
+  closeToTray: boolean;
 }
 
 function validate(field: string, value: string): string | null {
@@ -26,7 +36,7 @@ function validate(field: string, value: string): string | null {
   }
 }
 
-export default function Settings({ onSaved }: SettingsProps) {
+export default function Settings({ onSaved, onCancel }: SettingsProps) {
   const [websocketUrl, setWebsocketUrl] = useState("");
   const [websocketToken, setWebsocketToken] = useState("");
   const [websocketChannel, setWebsocketChannel] = useState("");
@@ -38,6 +48,7 @@ export default function Settings({ onSaved }: SettingsProps) {
   const [closeToTray, setCloseToTray] = useState(true);
   const [copyLabel, setCopyLabel] = useState("Copy");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const originalConfig = useRef<StoredConfig | null>(null);
 
   useEffect(() => {
     load("config.json").then(async (store) => {
@@ -53,6 +64,14 @@ export default function Settings({ onSaved }: SettingsProps) {
       if (clientId) setSpotifyClientId(clientId);
       if (interval) setPollInterval(interval);
       if (ctt !== null && ctt !== undefined) setCloseToTray(ctt);
+      originalConfig.current = {
+        websocketUrl: url || "",
+        websocketToken: token || "",
+        websocketChannel: channel || "",
+        spotifyClientId: clientId || "",
+        pollInterval: interval || 5,
+        closeToTray: ctt !== null && ctt !== undefined ? ctt : true,
+      };
     });
     isEnabled().then(setAutostart);
   }, []);
@@ -70,6 +89,19 @@ export default function Settings({ onSaved }: SettingsProps) {
     !validate("websocketUrl", websocketUrl) &&
     !validate("spotifyClientId", spotifyClientId);
 
+  function configChanged(): boolean {
+    const orig = originalConfig.current;
+    if (!orig) return true;
+    return (
+      websocketUrl.trim() !== orig.websocketUrl ||
+      websocketToken.trim() !== orig.websocketToken ||
+      websocketChannel.trim() !== orig.websocketChannel ||
+      spotifyClientId.trim() !== orig.spotifyClientId ||
+      Math.max(1, Math.min(60, pollInterval)) !== orig.pollInterval ||
+      closeToTray !== orig.closeToTray
+    );
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSave) return;
@@ -84,7 +116,9 @@ export default function Settings({ onSaved }: SettingsProps) {
       await store.set("poll_interval_secs", Math.max(1, Math.min(60, pollInterval)));
       await store.set("close_to_tray", closeToTray);
       await store.save();
-      await invoke("reload_config");
+      if (configChanged()) {
+        await invoke("reload_config");
+      }
       onSaved();
     } catch (err) {
       setSaveError(`Failed to save: ${err}`);
@@ -289,7 +323,17 @@ export default function Settings({ onSaved }: SettingsProps) {
           </div>
         )}
 
-        <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
+        <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          {onCancel && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onCancel}
+              disabled={saving}
+            >
+              Cancel
+            </button>
+          )}
           <button
             type="submit"
             className="btn btn-primary"

@@ -131,17 +131,25 @@ pub struct SpotifyClient {
     refresh_token: Option<String>,
     expires_at: u64,
     user_id: Option<String>,
+    /// Set when a token refresh occurs, cleared by `take_refreshed_token`.
+    pending_refresh_token: Option<String>,
 }
 
 impl SpotifyClient {
     pub fn new(client_id: String) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+
         Self {
-            http: reqwest::Client::new(),
+            http,
             client_id,
             access_token: None,
             refresh_token: None,
             expires_at: 0,
             user_id: None,
+            pending_refresh_token: None,
         }
     }
 
@@ -159,10 +167,10 @@ impl SpotifyClient {
         now >= self.expires_at.saturating_sub(60)
     }
 
-    /// Refresh the access token if it's expired. Returns the new tokens if refreshed.
-    pub async fn ensure_token(&mut self) -> Result<Option<oauth::OAuthTokens>, SpotifyError> {
+    /// Refresh the access token if it's expired.
+    pub async fn ensure_token(&mut self) -> Result<(), SpotifyError> {
         if !self.is_token_expired() {
-            return Ok(None);
+            return Ok(());
         }
 
         let refresh = self
@@ -176,8 +184,15 @@ impl SpotifyClient {
             .await
             .map_err(|e| SpotifyError::RefreshFailed(e.to_string()))?;
 
+        self.pending_refresh_token = Some(tokens.refresh_token.clone());
         self.set_tokens(&tokens);
-        Ok(Some(tokens))
+        Ok(())
+    }
+
+    /// Returns the refresh token from the most recent token refresh, if any.
+    /// Clears the pending state so the caller can persist it exactly once.
+    pub fn take_refreshed_token(&mut self) -> Option<String> {
+        self.pending_refresh_token.take()
     }
 
     fn auth_header(&self) -> Result<String, SpotifyError> {
@@ -339,38 +354,28 @@ impl SpotifyClient {
             API_BASE,
             crate::oauth::urlencoding::encode(track_uri)
         );
-        let resp = self
-            .http
-            .post(&url)
+
+        let resp = self.http.post(&url)
             .header("Authorization", &auth)
             .header("Content-Length", "0")
             .send()
             .await?;
 
-        if resp.status() == reqwest::StatusCode::NO_CONTENT {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            log::warn!("Got 401 on add_to_queue, attempting token refresh");
+            self.expires_at = 0;
+            self.ensure_token().await?;
+            let auth = self.auth_header()?;
+            let resp = self.http.post(&url)
+                .header("Authorization", &auth)
+                .header("Content-Length", "0")
+                .send()
+                .await?;
+            self.check_response(resp).await?;
             return Ok(());
         }
 
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            log::warn!("Got 401 on add_to_queue, refreshing token");
-            // Force a retry - but don't recurse, just report the error
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(SpotifyError::Api {
-                status,
-                message: body,
-            });
-        }
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(SpotifyError::Api {
-                status,
-                message: body,
-            });
-        }
-
+        self.check_response(resp).await?;
         Ok(())
     }
 

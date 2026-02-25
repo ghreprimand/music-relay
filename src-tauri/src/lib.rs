@@ -236,6 +236,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let store = app.store("config.json")?;
             let config = AppConfig::from_store(&store);
