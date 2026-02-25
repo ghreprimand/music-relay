@@ -70,7 +70,12 @@ export default function Status({ onOpenSettings }: StatusProps) {
 
   function handleReconnect() {
     setReconnecting(true);
-    invoke("restart_relay").catch(() => setReconnecting(false));
+    invoke("restart_relay").catch((err) => {
+      setReconnecting(false);
+      setStatus((prev) =>
+        prev ? { ...prev, last_error: `Reconnect failed: ${err}` } : prev
+      );
+    });
   }
 
   const showReconnect =

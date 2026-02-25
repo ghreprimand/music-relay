@@ -302,10 +302,28 @@ async fn poll_now_playing(
                 state.now_playing = None;
             });
             emit_status(app);
-            if changed { None } else { None }
+            if changed {
+                // Broadcast that playback stopped
+                Some(NowPlayingInfo {
+                    track_name: String::new(),
+                    artist_name: String::new(),
+                    album_name: String::new(),
+                    album_art_url: None,
+                    is_playing: false,
+                    progress_ms: None,
+                    duration_ms: 0,
+                    track_uri: String::new(),
+                })
+            } else {
+                None
+            }
         }
         Err(e) => {
             log::warn!("Failed to get now playing: {}", e);
+            update_state(app, |state| {
+                state.last_error = Some(format!("Spotify: {}", e));
+            });
+            emit_status(app);
             None
         }
     }
