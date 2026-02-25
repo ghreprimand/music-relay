@@ -62,7 +62,8 @@ fn reload_config(
     // Start relay if configured
     if configured {
         let platform = Arc::new(TauriPlatform::new(app));
-        let shutdown_tx = relay_core::start_relay(platform, config.relay);
+        let (shutdown_tx, future) = relay_core::start_relay(platform, config.relay);
+        tauri::async_runtime::spawn(future);
         let mut inner = inner.lock().map_err(|e| e.to_string())?;
         inner.relay_shutdown = Some(shutdown_tx);
     }
@@ -94,7 +95,8 @@ fn restart_relay(
 
     if config.is_configured() {
         let platform = Arc::new(TauriPlatform::new(app));
-        let shutdown_tx = relay_core::start_relay(platform, config.relay);
+        let (shutdown_tx, future) = relay_core::start_relay(platform, config.relay);
+        tauri::async_runtime::spawn(future);
         let mut inner = inner.lock().map_err(|e| e.to_string())?;
         inner.relay_shutdown = Some(shutdown_tx);
     }
@@ -265,7 +267,8 @@ pub fn run() {
             // Auto-start relay if already configured
             if configured {
                 let platform = Arc::new(TauriPlatform::new(app.handle().clone()));
-                let shutdown_tx = relay_core::start_relay(platform, config.relay);
+                let (shutdown_tx, future) = relay_core::start_relay(platform, config.relay);
+                tauri::async_runtime::spawn(future);
                 if let Some(inner) = app.try_state::<Mutex<TauriInner>>() {
                     if let Ok(mut inner) = inner.lock() {
                         inner.relay_shutdown = Some(shutdown_tx);

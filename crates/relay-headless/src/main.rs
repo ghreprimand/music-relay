@@ -42,7 +42,8 @@ async fn main() {
     let platform = Arc::new(HeadlessPlatform::new(config_path));
 
     log::info!("Starting relay (server: {})", relay_config.server_url);
-    let shutdown_tx = relay_core::start_relay(platform, relay_config);
+    let (shutdown_tx, future) = relay_core::start_relay(platform, relay_config);
+    tokio::spawn(future);
 
     // Wait for SIGINT / SIGTERM
     let tx = shutdown_tx.clone();
