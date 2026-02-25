@@ -37,16 +37,16 @@ The relay subscribes to a Centrifugo channel and listens for commands. When a co
 | `config.rs` | `AppConfig` struct, store-based persistence |
 | `state.rs` | `AppState` with connection statuses, now-playing info, relay lifecycle |
 | `oauth.rs` | Spotify PKCE flow: code verifier/challenge generation, localhost callback listener (port 18974), token exchange, token refresh |
-| `spotify.rs` | Spotify Web API client (GET/POST/PUT/DELETE) with typed request/response structs, automatic token refresh, 401 retry, URI batching for playlist operations |
+| `spotify.rs` | Spotify Web API client (GET/POST/PUT/DELETE) with typed request/response structs, automatic token refresh, 401 retry, 15s request timeout, URI batching for playlist operations |
 | `centrifugo.rs` | Centrifugo JSON protocol client: connect, subscribe, publish, ping/pong, reconnect with exponential backoff |
-| `relay.rs` | Background orchestrator: authenticates Spotify, connects Centrifugo, runs poll loop, dispatches commands (playback, queue, search, playlists), emits status events to frontend |
+| `relay.rs` | Background orchestrator: authenticates Spotify, connects Centrifugo, runs poll loop, dispatches commands (playback, queue, search, playlists), emits status events to frontend, retry with backoff on failure |
 
 ### Frontend Components (TypeScript/React)
 
 | Component | Responsibility |
 |-----------|---------------|
 | `App.tsx` | View router: redirects to Settings if unconfigured, otherwise shows Status |
-| `Settings.tsx` | Three-card settings form: Spotify setup guide, server connection fields, preferences |
+| `Settings.tsx` | Three-card settings form: Spotify setup guide, server connection fields, preferences. Cancel button when returning from status view. Only restarts relay if config actually changed. |
 | `Status.tsx` | Live connection status display, now-playing info, error banner, reconnect button |
 
 ## Spotify Integration
@@ -157,17 +157,19 @@ Settings are persisted as JSON via `tauri-plugin-store`:
 1. Load config from store
 2. If configured, spawn relay background task:
    a. Check for stored `spotify_refresh_token` and attempt silent refresh
-   b. If no token or refresh fails, open browser for full OAuth flow
+   b. If no stored token (first run), open browser for full OAuth flow
    c. Connect to Centrifugo (if token + channel configured)
    d. Begin polling Spotify at the configured interval
 3. Emit `status-changed` events to frontend on each state transition
 
 ### Reconnection
 
-- WebSocket disconnect or ping timeout triggers automatic reconnection
-- Exponential backoff: 2s, 4s, 8s, 16s, 30s (capped at 30s)
-- Backoff resets on successful connection
-- Spotify auth errors surface in the UI with a Reconnect button
+**WebSocket level:** disconnect or ping timeout triggers automatic reconnection with exponential backoff (2s, 4s, 8s, 16s, 30s cap). Backoff resets on successful connection.
+
+**Relay level:** if the relay task itself fails (e.g. Spotify auth error, network outage), it retries up to 5 times with the same exponential backoff. The retry counter resets if the relay had been running successfully before failing. If all retries are exhausted:
+- A system notification alerts the user: "Spotify song requests are no longer being relayed"
+- The stored refresh token is cleared so the next app restart triggers a fresh OAuth flow
+- The error is shown in the Status UI with a Reconnect button
 
 ### Dual Mode
 
@@ -245,6 +247,7 @@ GitHub Actions workflow (`.github/workflows/build.yml`) builds on `ubuntu-22.04`
 | `tauri-plugin-shell` | Open URLs in browser |
 | `tauri-plugin-store` | JSON config persistence |
 | `tauri-plugin-autostart` | OS-level autostart registration |
+| `tauri-plugin-notification` | System notifications for relay failures |
 | `reqwest` | HTTP client for Spotify API |
 | `tokio-tungstenite` | WebSocket client for Centrifugo |
 | `futures-util` | Stream utilities for WebSocket messages |

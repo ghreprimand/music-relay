@@ -8,6 +8,7 @@
     "shell:default",
     "store:default",
     "autostart:default",
+    "notification:default",
     {
       "identifier": "core:window:allow-show",
       "windows": ["main"]
