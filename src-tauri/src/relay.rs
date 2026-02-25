@@ -152,11 +152,26 @@ async fn run_with_centrifugo(
         // Run the combined poll + command loop
         let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs.max(1));
         let mut ticker = tokio::time::interval(poll_interval);
+        let mut last_track_uri: Option<String> = None;
 
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    poll_now_playing(&app, spotify).await;
+                    let broadcast = poll_now_playing(&app, spotify, &mut last_track_uri).await;
+                    if let Some(data) = broadcast {
+                        let msg = CommandResponse {
+                            id: String::new(),
+                            result: Some(serde_json::json!({
+                                "type": "now_playing",
+                                "data": data
+                            })),
+                            error: None,
+                        };
+                        if response_tx.send(msg).await.is_err() {
+                            log::warn!("Response channel closed during broadcast");
+                            break;
+                        }
+                    }
                 }
                 cmd = command_rx.recv() => {
                     match cmd {
@@ -217,11 +232,12 @@ async fn run_poll_only(
 
     let poll_interval = std::time::Duration::from_secs(config.poll_interval_secs.max(1));
     let mut interval = tokio::time::interval(poll_interval);
+    let mut last_track_uri: Option<String> = None;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                poll_now_playing(&app, spotify).await;
+                poll_now_playing(&app, spotify, &mut last_track_uri).await;
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -237,7 +253,13 @@ async fn run_poll_only(
     }
 }
 
-async fn poll_now_playing(app: &tauri::AppHandle, spotify: &mut SpotifyClient) {
+/// Poll Spotify for now-playing. Returns Some(info) when the track changes
+/// (for broadcasting over WebSocket).
+async fn poll_now_playing(
+    app: &tauri::AppHandle,
+    spotify: &mut SpotifyClient,
+    last_track_uri: &mut Option<String>,
+) -> Option<NowPlayingInfo> {
     match spotify.get_now_playing().await {
         Ok(Some(np)) => {
             let info = np.item.as_ref().map(|track| NowPlayingInfo {
@@ -255,8 +277,14 @@ async fn poll_now_playing(app: &tauri::AppHandle, spotify: &mut SpotifyClient) {
                 duration_ms: track.duration_ms,
                 track_uri: track.uri.clone(),
             });
+
+            // Detect track change
+            let current_uri = np.item.as_ref().map(|t| t.uri.clone());
+            let changed = current_uri != *last_track_uri;
+            *last_track_uri = current_uri;
+
             update_state(app, |state| {
-                state.now_playing = info;
+                state.now_playing = info.clone();
             });
             emit_status(app);
 
@@ -264,15 +292,21 @@ async fn poll_now_playing(app: &tauri::AppHandle, spotify: &mut SpotifyClient) {
             if let Ok(Some(new_tokens)) = spotify.ensure_token().await {
                 persist_refresh_token(app, &new_tokens.refresh_token);
             }
+
+            if changed { info } else { None }
         }
         Ok(None) => {
+            let changed = last_track_uri.is_some();
+            *last_track_uri = None;
             update_state(app, |state| {
                 state.now_playing = None;
             });
             emit_status(app);
+            if changed { None } else { None }
         }
         Err(e) => {
             log::warn!("Failed to get now playing: {}", e);
+            None
         }
     }
 }

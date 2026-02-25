@@ -98,10 +98,6 @@ impl SpotifyClient {
         self.expires_at = tokens.expires_at;
     }
 
-    pub fn has_tokens(&self) -> bool {
-        self.access_token.is_some()
-    }
-
     fn is_token_expired(&self) -> bool {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
