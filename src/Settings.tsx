@@ -122,16 +122,15 @@ export default function Settings({ onSaved }: SettingsProps) {
             <div className="setup-step">
               <span className="step-number">1</span>
               <span>
-                <a
-                  href="#"
+                <button
+                  type="button"
                   className="field-link"
-                  onClick={(e) => {
-                    e.preventDefault();
+                  onClick={() => {
                     invoke("open_url", { url: "https://developer.spotify.com/dashboard" });
                   }}
                 >
                   Create a Spotify app
-                </a>
+                </button>
                 {" "}on the developer dashboard
               </span>
             </div>
