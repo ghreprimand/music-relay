@@ -27,7 +27,7 @@ Music Relay (this app)
 Spotify Web API
 ```
 
-The relay subscribes to a Centrifugo channel and listens for commands. When a command arrives (e.g. search, add to queue), the relay executes it against the Spotify API and publishes the result back to the same channel. The relay also proactively broadcasts now-playing state whenever the track changes.
+The relay subscribes to a Centrifugo channel and listens for commands. When a command arrives (e.g. search, add to queue, manage playlists), the relay executes it against the Spotify API and publishes the result back to the same channel. The relay also proactively broadcasts now-playing state whenever the track changes.
 
 ### Backend Modules (Rust)
 
@@ -37,9 +37,9 @@ The relay subscribes to a Centrifugo channel and listens for commands. When a co
 | `config.rs` | `AppConfig` struct, store-based persistence |
 | `state.rs` | `AppState` with connection statuses, now-playing info, relay lifecycle |
 | `oauth.rs` | Spotify PKCE flow: code verifier/challenge generation, localhost callback listener (port 18974), token exchange, token refresh |
-| `spotify.rs` | Spotify Web API client with typed request/response structs, automatic token refresh, 401 retry |
+| `spotify.rs` | Spotify Web API client (GET/POST/PUT/DELETE) with typed request/response structs, automatic token refresh, 401 retry, URI batching for playlist operations |
 | `centrifugo.rs` | Centrifugo JSON protocol client: connect, subscribe, publish, ping/pong, reconnect with exponential backoff |
-| `relay.rs` | Background orchestrator: authenticates Spotify, connects Centrifugo, runs poll loop, dispatches commands, emits status events to frontend |
+| `relay.rs` | Background orchestrator: authenticates Spotify, connects Centrifugo, runs poll loop, dispatches commands (playback, queue, search, playlists), emits status events to frontend |
 
 ### Frontend Components (TypeScript/React)
 
@@ -59,6 +59,20 @@ The relay subscribes to a Centrifugo channel and listens for commands. When a co
 4. Exchanges the authorization code for access + refresh tokens
 5. Stores the refresh token in the local config store
 6. On subsequent launches, refreshes silently without opening the browser
+
+### OAuth Scopes
+
+The relay requests these scopes during authorization:
+
+- `user-read-currently-playing` -- now-playing polling and broadcast
+- `user-read-playback-state` -- queue and full playback state
+- `user-modify-playback-state` -- add to queue
+- `playlist-read-private` -- read private playlists
+- `playlist-read-collaborative` -- read collaborative playlists
+- `playlist-modify-public` -- create/modify public playlists
+- `playlist-modify-private` -- create/modify private playlists
+
+**Upgrading from versions before 1.1.0:** The stored refresh token from earlier versions does not include playlist scopes. After upgrading, delete the stored `spotify_refresh_token` from the config store (or delete the config file) to trigger a fresh OAuth flow with the full scope set.
 
 ### API Endpoints Used
 
@@ -91,10 +105,11 @@ The relay uses typed Rust structs for all Spotify responses. Key types:
 - `SearchResponse` -- `tracks: { items: Vec<Track>, total: u32 }`
 - `PlaybackState` -- `is_playing`, `progress_ms`, `item: Option<Track>`, `context: Option<PlaybackContext>`, `shuffle_state`, `device: Option<Device>`
 - `PlaybackContext` -- `type`, `uri`
-- `Device` -- `id`, `name`, `is_active`
+- `Device` -- `id: Option<String>`, `name`, `is_active`
 - `PlaylistTracksResponse` -- `items: Vec<PlaylistItem>`, `total: u32`
 - `PlaylistItem` -- `track: Option<Track>`
 - `CreatePlaylistResponse` -- `id`, `external_urls: ExternalUrls`
+- `ExternalUrls` -- `spotify`
 - `UserProfile` -- `id`
 
 ## WebSocket Protocol
