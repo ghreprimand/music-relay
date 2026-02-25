@@ -10,6 +10,7 @@ pub struct AppConfig {
     pub spotify_client_id: String,
     pub redirect_uri: String,
     pub poll_interval_secs: u64,
+    pub close_to_tray: bool,
 }
 
 impl Default for AppConfig {
@@ -19,6 +20,7 @@ impl Default for AppConfig {
             spotify_client_id: String::new(),
             redirect_uri: "http://127.0.0.1:18974/callback".to_string(),
             poll_interval_secs: 5,
+            close_to_tray: true,
         }
     }
 }
@@ -40,11 +42,17 @@ impl AppConfig {
             .and_then(|v| v.as_u64())
             .unwrap_or(5);
 
+        let close_to_tray = store
+            .get("close_to_tray")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
         Self {
             websocket_url,
             spotify_client_id,
             redirect_uri: "http://127.0.0.1:18974/callback".to_string(),
             poll_interval_secs,
+            close_to_tray,
         }
     }
 
