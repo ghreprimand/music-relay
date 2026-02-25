@@ -121,6 +121,41 @@ pub enum ServerCommand {
     Search { id: String, query: String },
     #[serde(rename = "add_to_queue")]
     AddToQueue { id: String, track_uri: String },
+    #[serde(rename = "get_playback_state")]
+    GetPlaybackState { id: String },
+    #[serde(rename = "get_playlist_tracks")]
+    GetPlaylistTracks {
+        id: String,
+        playlist_id: String,
+        offset: Option<u32>,
+        limit: Option<u32>,
+    },
+    #[serde(rename = "add_to_playlist")]
+    AddToPlaylist {
+        id: String,
+        playlist_id: String,
+        uris: Vec<String>,
+        position: Option<u32>,
+    },
+    #[serde(rename = "remove_from_playlist")]
+    RemoveFromPlaylist {
+        id: String,
+        playlist_id: String,
+        uris: Vec<String>,
+    },
+    #[serde(rename = "replace_playlist")]
+    ReplacePlaylist {
+        id: String,
+        playlist_id: String,
+        uris: Vec<String>,
+    },
+    #[serde(rename = "create_playlist")]
+    CreatePlaylist {
+        id: String,
+        name: String,
+        description: Option<String>,
+        public: Option<bool>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]

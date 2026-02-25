@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 
 const SPOTIFY_AUTH_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
-const SCOPES: &str = "user-read-currently-playing user-read-playback-state user-modify-playback-state";
+const SCOPES: &str = "user-read-currently-playing user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private";
 const CALLBACK_TIMEOUT_SECS: u64 = 120;
 
 /// Open a URL in the system browser. On Linux, spawns xdg-open with
