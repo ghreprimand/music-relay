@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -11,6 +12,23 @@ use crate::state::{AppState, ConnectionStatus, NowPlayingInfo};
 use crate::token;
 
 const MAX_RELAY_RETRIES: u32 = 5;
+
+/// Categorized relay errors to control retry behavior.
+enum RelayError {
+    /// Transient failure (network, server error). Safe to retry.
+    Transient(String),
+    /// Requires user action (revoked token, OAuth failure). Do not retry.
+    NeedsAuth(String),
+}
+
+impl fmt::Display for RelayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RelayError::Transient(msg) => write!(f, "{}", msg),
+            RelayError::NeedsAuth(msg) => write!(f, "{}", msg),
+        }
+    }
+}
 
 /// Platform abstraction that decouples relay logic from Tauri or any specific runtime.
 pub trait RelayPlatform: Send + Sync + 'static {
@@ -49,7 +67,19 @@ pub fn start_relay<P: RelayPlatform>(
 
             match run_relay(&*platform, &config, shutdown_rx.clone(), connected.clone()).await {
                 Ok(()) => return,
-                Err(e) => {
+                Err(RelayError::NeedsAuth(msg)) => {
+                    // Auth failures require user action -- don't retry
+                    log::error!("Relay stopped: {}", msg);
+                    platform.clear_refresh_token();
+                    platform.update_state(|state| {
+                        state.last_error = Some(msg);
+                        state.spotify_status = ConnectionStatus::Disconnected;
+                        state.websocket_status = ConnectionStatus::Disconnected;
+                    });
+                    platform.emit_status();
+                    return;
+                }
+                Err(RelayError::Transient(msg)) => {
                     // Reset retry counter if the relay had been running successfully
                     if connected.load(Ordering::Relaxed) {
                         attempt = 0;
@@ -59,11 +89,11 @@ pub fn start_relay<P: RelayPlatform>(
                         "Relay failed (attempt {}/{}): {}",
                         attempt,
                         MAX_RELAY_RETRIES,
-                        e
+                        msg
                     );
 
                     platform.update_state(|state| {
-                        state.last_error = Some(e.to_string());
+                        state.last_error = Some(msg);
                         state.spotify_status = ConnectionStatus::Disconnected;
                         state.websocket_status = ConnectionStatus::Disconnected;
                     });
@@ -71,8 +101,6 @@ pub fn start_relay<P: RelayPlatform>(
 
                     if attempt >= MAX_RELAY_RETRIES {
                         log::error!("Relay exceeded max retries, giving up");
-                        // Clear the bad refresh token so next launch triggers
-                        // a fresh OAuth flow instead of repeating the same failure
                         platform.clear_refresh_token();
                         platform.notify(
                             "Music Relay -- Connection Failed",
@@ -103,7 +131,7 @@ async fn run_relay<P: RelayPlatform>(
     config: &RelayConfig,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     connected: Arc<AtomicBool>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), RelayError> {
     // Step 1: Authenticate with Spotify
     platform.update_state(|state| {
         state.spotify_status = ConnectionStatus::Connecting;
@@ -131,9 +159,13 @@ async fn run_relay<P: RelayPlatform>(
     let has_server = !config.server_url.is_empty() && !config.api_key.is_empty();
 
     if has_server {
-        run_with_centrifugo(platform, config, &mut spotify, shutdown_rx).await
+        run_with_centrifugo(platform, config, &mut spotify, shutdown_rx)
+            .await
+            .map_err(|e| RelayError::Transient(e.to_string()))
     } else {
-        run_poll_only(platform, config, &mut spotify, shutdown_rx).await
+        run_poll_only(platform, config, &mut spotify, shutdown_rx)
+            .await
+            .map_err(|e| RelayError::Transient(e.to_string()))
     }
 }
 
@@ -591,7 +623,7 @@ fn error_response(id: String, code: &str, message: &str) -> CommandResponse {
 async fn authenticate_spotify<P: RelayPlatform>(
     platform: &P,
     config: &RelayConfig,
-) -> Result<oauth::OAuthTokens, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<oauth::OAuthTokens, RelayError> {
     if let Some(refresh_token) = platform.get_refresh_token() {
         log::info!("Found existing refresh token, attempting refresh");
         match oauth::refresh_access_token(&config.spotify_client_id, &refresh_token).await {
@@ -600,22 +632,30 @@ async fn authenticate_spotify<P: RelayPlatform>(
                 return Ok(tokens);
             }
             Err(e) => {
-                // Return the error instead of falling back to browser OAuth.
-                // The retry loop will handle transient failures, and if the
-                // refresh token is truly revoked the user will see the error.
-                return Err(format!("Token refresh failed: {}", e).into());
+                let msg = e.to_string();
+                // Detect permanently revoked tokens (Spotify returns "invalid_grant")
+                if msg.contains("invalid_grant") {
+                    platform.clear_refresh_token();
+                    return Err(RelayError::NeedsAuth(
+                        "Spotify refresh token revoked. Open Music Relay to re-authenticate.".into(),
+                    ));
+                }
+                // Other refresh failures (network, server errors) are transient
+                return Err(RelayError::Transient(format!("Token refresh failed: {}", e)));
             }
         }
     }
 
-    // No stored refresh token -- first-time setup, requires browser interaction
+    // No stored refresh token -- first-time setup, requires browser interaction.
+    // This is attempted once. If it fails, we stop (no retrying browser OAuth).
+    log::info!("No refresh token found, starting OAuth flow");
     let tokens = oauth::start_oauth_flow(
         &config.spotify_client_id,
         &config.redirect_uri,
         |url| platform.present_auth_url(url),
     )
     .await
-    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+    .map_err(|e| RelayError::NeedsAuth(format!("Spotify authorization failed: {}", e)))?;
 
     Ok(tokens)
 }
