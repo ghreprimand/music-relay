@@ -76,10 +76,25 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | head -20
 
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      - name: Extract release notes
+        id: notes
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES=$(awk "/^## ${VERSION//./\\.}\$/{found=1; next} /^## /{if(found) exit} found{print}" CHANGELOG.md)
+          # Write to file to preserve formatting
+          echo "$NOTES" > release-notes.md
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: "Music Relay ${{ github.ref_name }}"
+          body_path: release-notes.md
           draft: true
           files: |
             artifacts/**/*.deb
