@@ -100,7 +100,21 @@ fn get_close_to_tray(state: tauri::State<'_, Mutex<AppState>>) -> Result<bool, S
 
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    open::that(&url).map_err(|e| e.to_string())
+    // AppImage bundles modify LD_LIBRARY_PATH which breaks xdg-open.
+    // Spawn it directly with the bundled paths removed.
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(&url);
+        cmd.env_remove("LD_LIBRARY_PATH");
+        cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE");
+        cmd.spawn().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        open::that(&url).map_err(|e| e.to_string())
+    }
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
