@@ -34,6 +34,7 @@ export default function Settings({ onSaved }: SettingsProps) {
   const [saving, setSaving] = useState(false);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [autostart, setAutostart] = useState(false);
+  const [closeToTray, setCloseToTray] = useState(true);
   const [copyLabel, setCopyLabel] = useState("Copy");
 
   useEffect(() => {
@@ -41,9 +42,11 @@ export default function Settings({ onSaved }: SettingsProps) {
       const url = await store.get<string>("websocket_url");
       const clientId = await store.get<string>("spotify_client_id");
       const interval = await store.get<number>("poll_interval_secs");
+      const ctt = await store.get<boolean>("close_to_tray");
       if (url) setWebsocketUrl(url);
       if (clientId) setSpotifyClientId(clientId);
       if (interval) setPollInterval(interval);
+      if (ctt !== null && ctt !== undefined) setCloseToTray(ctt);
     });
     isEnabled().then(setAutostart);
   }, []);
@@ -70,6 +73,7 @@ export default function Settings({ onSaved }: SettingsProps) {
       await store.set("websocket_url", websocketUrl.trim());
       await store.set("spotify_client_id", spotifyClientId.trim());
       await store.set("poll_interval_secs", Math.max(1, Math.min(60, pollInterval)));
+      await store.set("close_to_tray", closeToTray);
       await store.save();
       await invoke("reload_config");
       onSaved();
@@ -212,6 +216,25 @@ export default function Settings({ onSaved }: SettingsProps) {
                 aria-checked={autostart}
                 className={`toggle${autostart ? " toggle-on" : ""}`}
                 onClick={() => handleAutostart(!autostart)}
+              >
+                <span className="toggle-knob" />
+              </button>
+            </div>
+          </div>
+          <div className="field">
+            <div className="toggle-row">
+              <div>
+                <div className="toggle-row-label">Minimize to tray on close</div>
+                <div className="toggle-row-hint">
+                  Keep running in the background when you close the window
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={closeToTray}
+                className={`toggle${closeToTray ? " toggle-on" : ""}`}
+                onClick={() => setCloseToTray(!closeToTray)}
               >
                 <span className="toggle-knob" />
               </button>

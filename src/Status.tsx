@@ -1,10 +1,23 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+interface NowPlayingInfo {
+  track_name: string;
+  artist_name: string;
+  album_name: string;
+  album_art_url: string | null;
+  is_playing: boolean;
+  progress_ms: number | null;
+  duration_ms: number;
+  track_uri: string;
+}
 
 interface StatusData {
   spotify: string;
   websocket: string;
-  now_playing: string | null;
+  now_playing: NowPlayingInfo | null;
+  last_error: string | null;
 }
 
 interface StatusProps {
@@ -26,17 +39,33 @@ function formatStatus(status: string): string {
     case "Connected":
       return "Connected";
     case "Connecting":
-      return "Connecting";
+      return "Connecting...";
     default:
       return "Disconnected";
   }
+}
+
+function formatNowPlaying(np: NowPlayingInfo | null): string {
+  if (!np) return "Nothing playing";
+  if (!np.is_playing) return "Paused";
+  return `${np.artist_name} - ${np.track_name}`;
 }
 
 export default function Status({ onOpenSettings }: StatusProps) {
   const [status, setStatus] = useState<StatusData | null>(null);
 
   useEffect(() => {
+    // Initial fetch
     invoke<StatusData>("get_status").then(setStatus);
+
+    // Listen for live updates from the relay
+    const unlisten = listen<StatusData>("status-changed", (event) => {
+      setStatus(event.payload);
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   return (
@@ -57,28 +86,36 @@ export default function Status({ onOpenSettings }: StatusProps) {
       </div>
 
       {status ? (
-        <div className="card">
-          <div className="status-row">
-            <span className="status-label">Spotify</span>
-            <span className="status-value">
-              <StatusDot status={status.spotify} />
-              {formatStatus(status.spotify)}
-            </span>
+        <>
+          <div className="card">
+            <div className="status-row">
+              <span className="status-label">Spotify</span>
+              <span className="status-value">
+                <StatusDot status={status.spotify} />
+                {formatStatus(status.spotify)}
+              </span>
+            </div>
+            <div className="status-row">
+              <span className="status-label">WebSocket</span>
+              <span className="status-value">
+                <StatusDot status={status.websocket} />
+                {formatStatus(status.websocket)}
+              </span>
+            </div>
+            <div className="status-row">
+              <span className="status-label">Now Playing</span>
+              <span className="status-value muted">
+                {formatNowPlaying(status.now_playing)}
+              </span>
+            </div>
           </div>
-          <div className="status-row">
-            <span className="status-label">WebSocket</span>
-            <span className="status-value">
-              <StatusDot status={status.websocket} />
-              {formatStatus(status.websocket)}
-            </span>
-          </div>
-          <div className="status-row">
-            <span className="status-label">Now Playing</span>
-            <span className="status-value muted">
-              {status.now_playing ?? "Nothing"}
-            </span>
-          </div>
-        </div>
+
+          {status.last_error && (
+            <div className="card error-card">
+              <div className="error-text">{status.last_error}</div>
+            </div>
+          )}
+        </>
       ) : (
         <div className="card">
           <p className="muted">Loading...</p>

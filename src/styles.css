@@ -377,6 +377,20 @@ input.input-error:focus {
   cursor: not-allowed;
 }
 
+/* Error card */
+
+.error-card {
+  margin-top: 12px;
+  border-color: #ef4444;
+  background: #1a1015;
+}
+
+.error-text {
+  font-size: 13px;
+  color: #ef4444;
+  line-height: 1.5;
+}
+
 .tray-note {
   margin-top: auto;
   padding-top: 16px;
