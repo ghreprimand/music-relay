@@ -67,6 +67,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -75,11 +80,6 @@ jobs:
 
       - name: List artifacts
         run: find artifacts -type f | head -20
-
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: CHANGELOG.md
-          sparse-checkout-cone-mode: false
 
       - name: Extract release notes
         id: notes
