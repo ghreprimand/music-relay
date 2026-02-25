@@ -12,6 +12,13 @@ pub struct TauriAppConfig {
 
 impl TauriAppConfig {
     pub fn from_store<R: Runtime>(store: &Arc<Store<R>>) -> Self {
+        // Clean up legacy keys from pre-1.3.0 configs
+        for key in &["websocket_url", "websocket_token", "websocket_channel"] {
+            if store.has(*key) {
+                let _ = store.delete(*key);
+            }
+        }
+
         let server_url = store
             .get("server_url")
             .and_then(|v| v.as_str().map(String::from))
