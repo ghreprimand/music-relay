@@ -25,6 +25,8 @@ pub struct Track {
     pub duration_ms: u64,
     pub artists: Vec<Artist>,
     pub album: Album,
+    #[serde(default)]
+    pub popularity: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
