@@ -314,6 +314,86 @@ Replaces all tracks in the playlist. Accepts more than 100 URIs (first 100 via P
 }
 ```
 
+### `get_artists`
+
+```json
+{
+  "command": "get_artists",
+  "id": "req-011",
+  "artist_ids": ["0oSGxfWSnnOXhD2fKuz2Gy", "6sFIWsNpZYqbRiJfEyKSzF"]
+}
+```
+
+Accepts up to 50 artist IDs.
+
+**Response result:**
+
+```json
+{
+  "artists": [
+    {
+      "id": "0oSGxfWSnnOXhD2fKuz2Gy",
+      "name": "Artist Name",
+      "genres": ["pop", "dance pop"],
+      "popularity": 82
+    }
+  ]
+}
+```
+
+Elements in the `artists` array may be `null` if an ID was not found.
+
+### `get_playlist_details`
+
+```json
+{
+  "command": "get_playlist_details",
+  "id": "req-012",
+  "playlist_id": "37i9dQZF1DXcBWIGoYBM5M"
+}
+```
+
+**Response result:**
+
+```json
+{
+  "id": "37i9dQZF1DXcBWIGoYBM5M",
+  "name": "Today's Top Hits",
+  "owner": {
+    "id": "spotify",
+    "display_name": "Spotify"
+  },
+  "tracks": {
+    "total": 50
+  },
+  "external_urls": {
+    "spotify": "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M"
+  }
+}
+```
+
+Uses Spotify's `fields` parameter to return only the listed fields.
+
+### `get_current_user`
+
+```json
+{
+  "command": "get_current_user",
+  "id": "req-013"
+}
+```
+
+**Response result:**
+
+```json
+{
+  "id": "user123",
+  "display_name": "DJ Name"
+}
+```
+
+The `display_name` field may be `null`. The result is cached for the lifetime of the relay session.
+
 ## Client Responses
 
 Every response is published to the channel as Centrifugo publication data. Responses include the original command `id` and either a `result` or `error` field.
@@ -395,8 +475,8 @@ The relay requests these OAuth scopes:
 | `user-read-currently-playing` | `get_now_playing`, `get_queue`, now-playing broadcast |
 | `user-read-playback-state` | `get_queue`, `get_playback_state` |
 | `user-modify-playback-state` | `add_to_queue` |
-| `playlist-read-private` | `get_playlist_tracks` |
-| `playlist-read-collaborative` | `get_playlist_tracks` |
+| `playlist-read-private` | `get_playlist_tracks`, `get_playlist_details` |
+| `playlist-read-collaborative` | `get_playlist_tracks`, `get_playlist_details` |
 | `playlist-modify-public` | `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist` |
 | `playlist-modify-private` | `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist` |
 

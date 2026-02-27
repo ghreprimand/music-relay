@@ -77,6 +77,10 @@ pub fn start_relay<P: RelayPlatform>(
                         state.websocket_status = ConnectionStatus::Disconnected;
                     });
                     platform.emit_status();
+                    platform.notify(
+                        "Music Relay -- Spotify Authorization Lost",
+                        "Spotify song requests are no longer being relayed. Open Music Relay to sign in again.",
+                    );
                     return;
                 }
                 Err(RelayError::Transient(msg)) => {
@@ -500,6 +504,9 @@ fn command_name(cmd: &ServerCommand) -> &'static str {
         ServerCommand::RemoveFromPlaylist { .. } => "remove_from_playlist",
         ServerCommand::ReplacePlaylist { .. } => "replace_playlist",
         ServerCommand::CreatePlaylist { .. } => "create_playlist",
+        ServerCommand::GetArtists { .. } => "get_artists",
+        ServerCommand::GetPlaylistDetails { .. } => "get_playlist_details",
+        ServerCommand::GetCurrentUser { .. } => "get_current_user",
     }
 }
 
@@ -601,6 +608,36 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Ok(playlist) => CommandResponse {
                     id,
                     result: Some(serde_json::to_value(&playlist).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::GetArtists { id, artist_ids } => {
+            match spotify.get_artists(&artist_ids).await {
+                Ok(artists) => CommandResponse {
+                    id,
+                    result: Some(serde_json::to_value(&artists).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::GetPlaylistDetails { id, playlist_id } => {
+            match spotify.get_playlist_details(&playlist_id).await {
+                Ok(details) => CommandResponse {
+                    id,
+                    result: Some(serde_json::to_value(&details).unwrap_or_default()),
+                    error: None,
+                },
+                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+            }
+        }
+        ServerCommand::GetCurrentUser { id } => {
+            match spotify.get_current_user().await {
+                Ok(user) => CommandResponse {
+                    id,
+                    result: Some(serde_json::to_value(&user).unwrap_or_default()),
                     error: None,
                 },
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),

@@ -120,6 +120,8 @@ The relay requests these scopes during authorization:
 | `/v1/me/player/queue?uri=...` | POST | `user-modify-playback-state` |
 | `/v1/me/player` | GET | `user-read-playback-state` |
 | `/v1/me` | GET | (none beyond valid token) |
+| `/v1/artists?ids=...` | GET | (none beyond valid token) |
+| `/v1/playlists/{id}?fields=...` | GET | `playlist-read-private`, `playlist-read-collaborative` |
 | `/v1/playlists/{id}/tracks` | GET | `playlist-read-private`, `playlist-read-collaborative` |
 | `/v1/playlists/{id}/tracks` | POST | `playlist-modify-public`, `playlist-modify-private` |
 | `/v1/playlists/{id}/tracks` | PUT | `playlist-modify-public`, `playlist-modify-private` |
@@ -146,14 +148,19 @@ The relay uses typed Rust structs for all Spotify responses. Key types:
 - `PlaylistItem` -- `track: Option<Track>`
 - `CreatePlaylistResponse` -- `id`, `external_urls: ExternalUrls`
 - `ExternalUrls` -- `spotify`
-- `UserProfile` -- `id`
+- `UserProfile` -- `id`, `display_name: Option<String>`
+- `ArtistDetail` -- `id`, `name`, `genres: Vec<String>`, `popularity: u32`
+- `GetArtistsResponse` -- `artists: Vec<Option<ArtistDetail>>`
+- `PlaylistDetails` -- `id`, `name`, `owner: PlaylistOwner`, `tracks: PlaylistTracksTotal`, `external_urls: ExternalUrls`
+- `PlaylistOwner` -- `id`, `display_name: Option<String>`
+- `PlaylistTracksTotal` -- `total: u32`
 
 ## WebSocket Protocol
 
 See [PROTOCOL.md](PROTOCOL.md) for the full wire format, including:
 
 - Token acquisition and channel derivation
-- Command schemas (`get_now_playing`, `get_queue`, `search`, `add_to_queue`, `get_playback_state`, `get_playlist_tracks`, `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist`)
+- Command schemas (`get_now_playing`, `get_queue`, `search`, `add_to_queue`, `get_playback_state`, `get_playlist_tracks`, `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist`, `get_artists`, `get_playlist_details`, `get_current_user`)
 - Response format (result/error with correlation IDs)
 - Now-playing broadcast format (published on track change)
 - Centrifugo publish wrapper

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.2
+
+### Features
+
+- New command: `get_artists` -- fetch artist details (genres, popularity) for up to 50 artist IDs
+- New command: `get_playlist_details` -- fetch playlist metadata (name, owner, track count, URL)
+- New command: `get_current_user` -- fetch the authenticated user's Spotify ID and display name
+- `UserProfile` now includes `display_name`
+
 ## 1.3.1
 
 - Include `popularity` field (0-100) in track objects returned by search results
