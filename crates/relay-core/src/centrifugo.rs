@@ -156,6 +156,18 @@ pub enum ServerCommand {
         description: Option<String>,
         public: Option<bool>,
     },
+    #[serde(rename = "get_artists")]
+    GetArtists {
+        id: String,
+        artist_ids: Vec<String>,
+    },
+    #[serde(rename = "get_playlist_details")]
+    GetPlaylistDetails {
+        id: String,
+        playlist_id: String,
+    },
+    #[serde(rename = "get_current_user")]
+    GetCurrentUser { id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

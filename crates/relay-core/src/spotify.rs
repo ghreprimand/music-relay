@@ -124,6 +124,43 @@ pub struct ExternalUrls {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
     pub id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArtistDetail {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub genres: Vec<String>,
+    #[serde(default)]
+    pub popularity: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetArtistsResponse {
+    pub artists: Vec<Option<ArtistDetail>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistOwner {
+    pub id: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistTracksTotal {
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistDetails {
+    pub id: String,
+    pub name: String,
+    pub owner: PlaylistOwner,
+    pub tracks: PlaylistTracksTotal,
+    pub external_urls: ExternalUrls,
 }
 
 pub struct SpotifyClient {
@@ -132,7 +169,7 @@ pub struct SpotifyClient {
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_at: u64,
-    user_id: Option<String>,
+    cached_user: Option<UserProfile>,
     /// Set when a token refresh occurs, cleared by `take_refreshed_token`.
     pending_refresh_token: Option<String>,
 }
@@ -150,7 +187,7 @@ impl SpotifyClient {
             access_token: None,
             refresh_token: None,
             expires_at: 0,
-            user_id: None,
+            cached_user: None,
             pending_refresh_token: None,
         }
     }
@@ -394,14 +431,14 @@ impl SpotifyClient {
     }
 
     pub async fn get_current_user(&mut self) -> Result<UserProfile, SpotifyError> {
-        if let Some(ref id) = self.user_id {
-            return Ok(UserProfile { id: id.clone() });
+        if let Some(ref profile) = self.cached_user {
+            return Ok(profile.clone());
         }
 
         let url = format!("{}/me", API_BASE);
         let resp = self.api_get(&url).await?;
         let profile: UserProfile = resp.json().await?;
-        self.user_id = Some(profile.id.clone());
+        self.cached_user = Some(profile.clone());
         Ok(profile)
     }
 
@@ -490,6 +527,30 @@ impl SpotifyClient {
         }
 
         Ok(snapshot_id)
+    }
+
+    pub async fn get_artists(
+        &mut self,
+        artist_ids: &[String],
+    ) -> Result<GetArtistsResponse, SpotifyError> {
+        let ids = artist_ids.join(",");
+        let url = format!("{}/artists?ids={}", API_BASE, ids);
+        let resp = self.api_get(&url).await?;
+        let body: GetArtistsResponse = resp.json().await?;
+        Ok(body)
+    }
+
+    pub async fn get_playlist_details(
+        &mut self,
+        playlist_id: &str,
+    ) -> Result<PlaylistDetails, SpotifyError> {
+        let url = format!(
+            "{}/playlists/{}?fields=id,name,owner(id,display_name),tracks(total),external_urls",
+            API_BASE, playlist_id
+        );
+        let resp = self.api_get(&url).await?;
+        let body: PlaylistDetails = resp.json().await?;
+        Ok(body)
     }
 
     pub async fn create_playlist(
