@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.3
+
+- Add macOS (.dmg) build to release workflow
+
 ## 1.3.2
 
 ### Features
