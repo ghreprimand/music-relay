@@ -22,11 +22,6 @@
         "center": true
       }
     ],
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": false,
-      "tooltip": "Music Relay"
-    },
     "security": {
       "csp": "default-src 'self'; connect-src 'self' https://api.spotify.com https://accounts.spotify.com wss://*; img-src 'self' https://i.scdn.co"
     }
