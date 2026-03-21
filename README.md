@@ -16,6 +16,16 @@ Pre-built binaries are available on [GitHub Releases](https://github.com/ghrepri
 | Windows | `.msi` |
 | macOS | `.dmg` |
 
+### macOS Installation Note
+
+The macOS `.dmg` is not signed with an Apple Developer certificate. After installing, macOS may report the app as "damaged." To fix this, run:
+
+```sh
+xattr -cr "/Applications/Music Relay.app"
+```
+
+Then open the app normally. This only needs to be done once after each install or upgrade.
+
 ### Headless
 
 | Architecture | Binary |
