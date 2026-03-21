@@ -322,8 +322,13 @@ export default function Settings({ onSaved, onCancel }: SettingsProps) {
           </button>
         </div>
       </form>
-      <div className="tray-note">
-        Music Relay runs in the system tray.
+      <div className="footer">
+        <button className="btn-exit" onClick={() => invoke("exit_app")}>
+          Exit
+        </button>
+        <span className="tray-note">
+          Music Relay runs in the system tray.
+        </span>
       </div>
     </div>
   );

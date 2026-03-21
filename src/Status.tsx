@@ -155,8 +155,13 @@ export default function Status({ onOpenSettings }: StatusProps) {
         </div>
       )}
 
-      <div className="tray-note">
-        This window can be closed. Music Relay continues in the system tray.
+      <div className="footer">
+        <button className="btn-exit" onClick={() => invoke("exit_app")}>
+          Exit
+        </button>
+        <span className="tray-note">
+          This window can be closed. Music Relay continues in the system tray.
+        </span>
       </div>
     </div>
   );
