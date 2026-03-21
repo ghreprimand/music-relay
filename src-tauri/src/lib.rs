@@ -111,6 +111,11 @@ fn get_close_to_tray(inner: tauri::State<'_, Mutex<TauriInner>>) -> Result<bool,
 }
 
 #[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     // AppImage bundles modify LD_LIBRARY_PATH which breaks xdg-open.
     // Spawn it directly with the bundled paths removed.
@@ -284,6 +289,7 @@ pub fn run() {
             get_close_to_tray,
             reload_config,
             restart_relay,
+            exit_app,
             open_url,
         ])
         .run(tauri::generate_context!())

@@ -406,10 +406,36 @@ input.input-error:focus {
   line-height: 1.5;
 }
 
-.tray-note {
+.footer {
   margin-top: auto;
   padding-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-exit {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: #71717a;
+  background: none;
+  border: 1px solid #2a2a3a;
+  border-radius: 3px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-exit:hover {
+  color: #ef4444;
+  border-color: #ef4444;
+}
+
+.tray-note {
   font-size: 12px;
   color: #52525b;
-  text-align: center;
+  text-align: right;
+  flex: 1;
 }
