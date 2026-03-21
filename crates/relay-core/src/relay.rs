@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::centrifugo::{self, CentrifugoClient, CommandError, CommandResponse, ServerCommand};
 use crate::config::RelayConfig;
 use crate::oauth;
-use crate::spotify::SpotifyClient;
+use crate::spotify::{SpotifyClient, SpotifyError};
 use crate::state::{AppState, ConnectionStatus, NowPlayingInfo};
 use crate::token;
 
@@ -507,6 +507,13 @@ fn command_name(cmd: &ServerCommand) -> &'static str {
         ServerCommand::GetArtists { .. } => "get_artists",
         ServerCommand::GetPlaylistDetails { .. } => "get_playlist_details",
         ServerCommand::GetCurrentUser { .. } => "get_current_user",
+        ServerCommand::Pause { .. } => "pause",
+        ServerCommand::Resume { .. } => "resume",
+        ServerCommand::SkipNext { .. } => "skip_next",
+        ServerCommand::SkipPrevious { .. } => "skip_previous",
+        ServerCommand::SetVolume { .. } => "set_volume",
+        ServerCommand::FadeSkip { .. } => "fade_skip",
+        ServerCommand::FadePause { .. } => "fade_pause",
     }
 }
 
@@ -643,6 +650,58 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
+        ServerCommand::Pause { id } => {
+            match spotify.pause().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            }
+        }
+        ServerCommand::Resume { id } => {
+            match spotify.resume().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            }
+        }
+        ServerCommand::SkipNext { id } => {
+            match spotify.skip_next().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            }
+        }
+        ServerCommand::SkipPrevious { id } => {
+            match spotify.skip_previous().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            }
+        }
+        ServerCommand::SetVolume { id, volume_percent } => {
+            match spotify.set_volume(volume_percent).await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            }
+        }
+        ServerCommand::FadeSkip { id } => handle_fade_skip(id, spotify).await,
+        ServerCommand::FadePause { id } => handle_fade_pause(id, spotify).await,
     }
 }
 
@@ -654,6 +713,135 @@ fn error_response(id: String, code: &str, message: &str) -> CommandResponse {
             code: code.to_string(),
             message: message.to_string(),
         }),
+    }
+}
+
+fn playback_error_response(id: String, e: &SpotifyError) -> CommandResponse {
+    let (code, message) = match e {
+        SpotifyError::Api { status: 403, message } => ("forbidden".to_string(), message.clone()),
+        SpotifyError::Api { status: 404, .. } => (
+            "no_device".to_string(),
+            "No active Spotify device".to_string(),
+        ),
+        SpotifyError::Api { status: 429, message } => ("rate_limited".to_string(), message.clone()),
+        other => ("spotify_error".to_string(), other.to_string()),
+    };
+    error_response(id, &code, &message)
+}
+
+async fn handle_fade_skip(id: String, spotify: &mut SpotifyClient) -> CommandResponse {
+    let current_volume = match spotify.get_playback_state().await {
+        Ok(Some(state)) => state.device.and_then(|d| d.volume_percent),
+        Ok(None) => {
+            return match spotify.skip_next().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({ "warning": "Could not read volume" })),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            };
+        }
+        Err(_) => None,
+    };
+
+    let original_volume = match current_volume {
+        Some(v) => v,
+        None => {
+            return match spotify.skip_next().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({ "warning": "Could not read volume" })),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            };
+        }
+    };
+
+    let steps = 5u32;
+    for i in 1..=steps {
+        let vol = original_volume * (steps - i) / steps;
+        let _ = spotify.set_volume(vol).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    if let Err(e) = spotify.skip_next().await {
+        let _ = spotify.set_volume(original_volume).await;
+        return playback_error_response(id, &e);
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let warning = match spotify.set_volume(original_volume).await {
+        Ok(()) => None,
+        Err(_) => Some("Could not restore volume"),
+    };
+
+    CommandResponse {
+        id,
+        result: Some(match warning {
+            Some(w) => serde_json::json!({ "warning": w }),
+            None => serde_json::json!({}),
+        }),
+        error: None,
+    }
+}
+
+async fn handle_fade_pause(id: String, spotify: &mut SpotifyClient) -> CommandResponse {
+    let current_volume = match spotify.get_playback_state().await {
+        Ok(Some(state)) => state.device.and_then(|d| d.volume_percent),
+        Ok(None) => {
+            return match spotify.pause().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({ "warning": "Could not read volume" })),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            };
+        }
+        Err(_) => None,
+    };
+
+    let original_volume = match current_volume {
+        Some(v) => v,
+        None => {
+            return match spotify.pause().await {
+                Ok(()) => CommandResponse {
+                    id,
+                    result: Some(serde_json::json!({ "warning": "Could not read volume" })),
+                    error: None,
+                },
+                Err(e) => playback_error_response(id, &e),
+            };
+        }
+    };
+
+    let steps = 5u32;
+    for i in 1..=steps {
+        let vol = original_volume * (steps - i) / steps;
+        let _ = spotify.set_volume(vol).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    if let Err(e) = spotify.pause().await {
+        let _ = spotify.set_volume(original_volume).await;
+        return playback_error_response(id, &e);
+    }
+
+    let warning = match spotify.set_volume(original_volume).await {
+        Ok(()) => None,
+        Err(_) => Some("Could not restore volume"),
+    };
+
+    CommandResponse {
+        id,
+        result: Some(match warning {
+            Some(w) => serde_json::json!({ "warning": w }),
+            None => serde_json::json!({}),
+        }),
+        error: None,
     }
 }
 

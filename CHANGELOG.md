@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.0
+
+### Features
+
+- New playback control commands: `pause`, `resume`, `skip_next`, `skip_previous`, `set_volume`
+- New fade commands: `fade_skip` (fade out, skip, restore volume) and `fade_pause` (fade out, pause, restore volume)
+- Specific error codes for playback failures: `forbidden` (403), `no_device` (404), `rate_limited` (429)
+- `Device` type now includes `volume_percent` field
+
 ## 1.3.3
 
 - Add macOS (.dmg) build to release workflow

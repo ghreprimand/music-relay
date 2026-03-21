@@ -394,6 +394,142 @@ Uses Spotify's `fields` parameter to return only the listed fields.
 
 The `display_name` field may be `null`. The result is cached for the lifetime of the relay session.
 
+### `pause`
+
+```json
+{
+  "command": "pause",
+  "id": "req-014"
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Pauses playback on the active device. Requires Spotify Premium.
+
+### `resume`
+
+```json
+{
+  "command": "resume",
+  "id": "req-015"
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Resumes playback on the active device. Requires Spotify Premium.
+
+### `skip_next`
+
+```json
+{
+  "command": "skip_next",
+  "id": "req-016"
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Skips to the next track. Requires Spotify Premium.
+
+### `skip_previous`
+
+```json
+{
+  "command": "skip_previous",
+  "id": "req-017"
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Skips to the previous track. Requires Spotify Premium.
+
+### `set_volume`
+
+```json
+{
+  "command": "set_volume",
+  "id": "req-018",
+  "volume_percent": 75
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Sets playback volume (0-100). Clamped to 100 if higher. Requires Spotify Premium.
+
+### `fade_skip`
+
+```json
+{
+  "command": "fade_skip",
+  "id": "req-019"
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Or with warning:
+
+```json
+{
+  "warning": "Could not read volume"
+}
+```
+
+Gradually reduces volume to zero (5 steps, ~200ms apart), skips to the next track, waits 500ms, then restores the original volume. If the current volume cannot be read, skips without fading and returns a warning. Requires Spotify Premium.
+
+### `fade_pause`
+
+```json
+{
+  "command": "fade_pause",
+  "id": "req-020"
+}
+```
+
+**Response result:**
+
+```json
+{}
+```
+
+Or with warning:
+
+```json
+{
+  "warning": "Could not read volume"
+}
+```
+
+Gradually reduces volume to zero (5 steps, ~200ms apart), pauses playback, then restores the original volume (so it is correct when playback is resumed). If the current volume cannot be read, pauses without fading and returns a warning. Requires Spotify Premium.
+
 ## Client Responses
 
 Every response is published to the channel as Centrifugo publication data. Responses include the original command `id` and either a `result` or `error` field.
@@ -424,6 +560,9 @@ Every response is published to the channel as Centrifugo publication data. Respo
 | Code | Meaning |
 |------|---------|
 | `spotify_error` | Spotify API returned an error (message contains details) |
+| `forbidden` | Spotify returned 403 (e.g. Premium required) |
+| `no_device` | No active Spotify device (Spotify returned 404) |
+| `rate_limited` | Spotify rate limit exceeded (429) |
 
 ## Now-Playing Broadcast
 
@@ -473,8 +612,8 @@ The relay requests these OAuth scopes:
 | Scope | Used By |
 |-------|---------|
 | `user-read-currently-playing` | `get_now_playing`, `get_queue`, now-playing broadcast |
-| `user-read-playback-state` | `get_queue`, `get_playback_state` |
-| `user-modify-playback-state` | `add_to_queue` |
+| `user-read-playback-state` | `get_queue`, `get_playback_state`, `fade_skip`, `fade_pause` |
+| `user-modify-playback-state` | `add_to_queue`, `pause`, `resume`, `skip_next`, `skip_previous`, `set_volume`, `fade_skip`, `fade_pause` |
 | `playlist-read-private` | `get_playlist_tracks`, `get_playlist_details` |
 | `playlist-read-collaborative` | `get_playlist_tracks`, `get_playlist_details` |
 | `playlist-modify-public` | `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist` |

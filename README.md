@@ -14,6 +14,7 @@ Pre-built binaries are available on [GitHub Releases](https://github.com/ghrepri
 |----------|--------|
 | Linux | `.AppImage`, `.deb` |
 | Windows | `.msi` |
+| macOS | `.dmg` |
 
 ### Headless
 
@@ -104,7 +105,7 @@ The relay requests these scopes during authorization:
 
 - `user-read-currently-playing` -- now-playing polling and broadcast
 - `user-read-playback-state` -- queue and full playback state
-- `user-modify-playback-state` -- add to queue
+- `user-modify-playback-state` -- add to queue, playback control (pause, resume, skip, volume)
 - `playlist-read-private` -- read private playlists
 - `playlist-read-collaborative` -- read collaborative playlists
 - `playlist-modify-public` -- create/modify public playlists
@@ -119,6 +120,11 @@ The relay requests these scopes during authorization:
 | `/v1/search?q=...&type=track` | GET | (none beyond valid token) |
 | `/v1/me/player/queue?uri=...` | POST | `user-modify-playback-state` |
 | `/v1/me/player` | GET | `user-read-playback-state` |
+| `/v1/me/player/pause` | PUT | `user-modify-playback-state` |
+| `/v1/me/player/play` | PUT | `user-modify-playback-state` |
+| `/v1/me/player/next` | POST | `user-modify-playback-state` |
+| `/v1/me/player/previous` | POST | `user-modify-playback-state` |
+| `/v1/me/player/volume?volume_percent=...` | PUT | `user-modify-playback-state` |
 | `/v1/me` | GET | (none beyond valid token) |
 | `/v1/artists?ids=...` | GET | (none beyond valid token) |
 | `/v1/playlists/{id}?fields=...` | GET | `playlist-read-private`, `playlist-read-collaborative` |
@@ -143,7 +149,7 @@ The relay uses typed Rust structs for all Spotify responses. Key types:
 - `SearchResponse` -- `tracks: { items: Vec<Track>, total: u32 }`
 - `PlaybackState` -- `is_playing`, `progress_ms`, `item: Option<Track>`, `context: Option<PlaybackContext>`, `shuffle_state`, `device: Option<Device>`
 - `PlaybackContext` -- `type`, `uri`
-- `Device` -- `id: Option<String>`, `name`, `is_active`
+- `Device` -- `id: Option<String>`, `name`, `is_active`, `volume_percent: Option<u32>`
 - `PlaylistTracksResponse` -- `items: Vec<PlaylistItem>`, `total: u32`
 - `PlaylistItem` -- `track: Option<Track>`
 - `CreatePlaylistResponse` -- `id`, `external_urls: ExternalUrls`
@@ -160,7 +166,7 @@ The relay uses typed Rust structs for all Spotify responses. Key types:
 See [PROTOCOL.md](PROTOCOL.md) for the full wire format, including:
 
 - Token acquisition and channel derivation
-- Command schemas (`get_now_playing`, `get_queue`, `search`, `add_to_queue`, `get_playback_state`, `get_playlist_tracks`, `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist`, `get_artists`, `get_playlist_details`, `get_current_user`)
+- Command schemas (`get_now_playing`, `get_queue`, `search`, `add_to_queue`, `get_playback_state`, `pause`, `resume`, `skip_next`, `skip_previous`, `set_volume`, `fade_skip`, `fade_pause`, `get_playlist_tracks`, `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist`, `get_artists`, `get_playlist_details`, `get_current_user`)
 - Response format (result/error with correlation IDs)
 - Now-playing broadcast format (published on track change)
 - Centrifugo publish wrapper
@@ -173,7 +179,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire format, including:
 | Field | Store Key | Type | Required | Description |
 |-------|-----------|------|----------|-------------|
 | Client ID | `spotify_client_id` | string | Yes | 32-character hex Spotify app client ID |
-| Server URL | `server_url` | string | Yes | Base URL of the server (e.g. `https://sq.example.com`) |
+| Server URL | `server_url` | string | Yes | Base URL of the server (e.g. `https://relay.example.com`) |
 | API Key | `api_key` | string | Yes | API key for authenticating with the server's token endpoint |
 | Poll Interval | `poll_interval_secs` | number | No | Seconds between now-playing polls (default: 5, range: 1-60) |
 | Minimize to tray | `close_to_tray` | boolean | No | Hide window on close instead of quitting (default: true) |
@@ -197,7 +203,7 @@ Config file location: `~/.config/music-relay/config.json`
 
 ```json
 {
-  "server_url": "https://sq.example.com",
+  "server_url": "https://relay.example.com",
   "api_key": "your-api-key",
   "spotify_client_id": "your-32-char-hex-client-id",
   "poll_interval_secs": 5,
