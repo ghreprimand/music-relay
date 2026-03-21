@@ -168,6 +168,20 @@ pub enum ServerCommand {
     },
     #[serde(rename = "get_current_user")]
     GetCurrentUser { id: String },
+    #[serde(rename = "pause")]
+    Pause { id: String },
+    #[serde(rename = "resume")]
+    Resume { id: String },
+    #[serde(rename = "skip_next")]
+    SkipNext { id: String },
+    #[serde(rename = "skip_previous")]
+    SkipPrevious { id: String },
+    #[serde(rename = "set_volume")]
+    SetVolume { id: String, volume_percent: u32 },
+    #[serde(rename = "fade_skip")]
+    FadeSkip { id: String },
+    #[serde(rename = "fade_pause")]
+    FadePause { id: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -215,7 +215,7 @@ export default function Settings({ onSaved, onCancel }: SettingsProps) {
               <div className="field-error">{serverUrlError}</div>
             ) : (
               <div className="field-hint">
-                The base URL of your server (e.g., https://sq.example.com)
+                The base URL of your server (e.g., https://relay.example.com)
               </div>
             )}
           </div>

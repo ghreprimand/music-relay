@@ -97,6 +97,8 @@ pub struct Device {
     pub id: Option<String>,
     pub name: String,
     pub is_active: bool,
+    #[serde(default)]
+    pub volume_percent: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,6 +352,56 @@ impl SpotifyClient {
         })
     }
 
+    async fn api_post_empty(&mut self, url: &str) -> Result<reqwest::Response, SpotifyError> {
+        self.ensure_token().await?;
+        let auth = self.auth_header()?;
+        let resp = self.http.post(url)
+            .header("Authorization", &auth)
+            .header("Content-Length", "0")
+            .send()
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            log::warn!("Got 401 on POST, attempting token refresh");
+            self.expires_at = 0;
+            self.ensure_token().await?;
+            let auth = self.auth_header()?;
+            let resp = self.http.post(url)
+                .header("Authorization", &auth)
+                .header("Content-Length", "0")
+                .send()
+                .await?;
+            return self.check_response(resp).await;
+        }
+
+        self.check_response(resp).await
+    }
+
+    async fn api_put_empty(&mut self, url: &str) -> Result<reqwest::Response, SpotifyError> {
+        self.ensure_token().await?;
+        let auth = self.auth_header()?;
+        let resp = self.http.put(url)
+            .header("Authorization", &auth)
+            .header("Content-Length", "0")
+            .send()
+            .await?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            log::warn!("Got 401 on PUT, attempting token refresh");
+            self.expires_at = 0;
+            self.ensure_token().await?;
+            let auth = self.auth_header()?;
+            let resp = self.http.put(url)
+                .header("Authorization", &auth)
+                .header("Content-Length", "0")
+                .send()
+                .await?;
+            return self.check_response(resp).await;
+        }
+
+        self.check_response(resp).await
+    }
+
     pub async fn get_now_playing(&mut self) -> Result<Option<NowPlaying>, SpotifyError> {
         let url = format!("{}/me/player/currently-playing", API_BASE);
         let resp = self.api_get(&url).await?;
@@ -573,5 +625,39 @@ impl SpotifyClient {
         let resp = self.api_post(&url, body).await?;
         let playlist: CreatePlaylistResponse = resp.json().await?;
         Ok(playlist)
+    }
+
+    pub async fn pause(&mut self) -> Result<(), SpotifyError> {
+        let url = format!("{}/me/player/pause", API_BASE);
+        self.api_put_empty(&url).await?;
+        Ok(())
+    }
+
+    pub async fn resume(&mut self) -> Result<(), SpotifyError> {
+        let url = format!("{}/me/player/play", API_BASE);
+        self.api_put_empty(&url).await?;
+        Ok(())
+    }
+
+    pub async fn skip_next(&mut self) -> Result<(), SpotifyError> {
+        let url = format!("{}/me/player/next", API_BASE);
+        self.api_post_empty(&url).await?;
+        Ok(())
+    }
+
+    pub async fn skip_previous(&mut self) -> Result<(), SpotifyError> {
+        let url = format!("{}/me/player/previous", API_BASE);
+        self.api_post_empty(&url).await?;
+        Ok(())
+    }
+
+    pub async fn set_volume(&mut self, volume_percent: u32) -> Result<(), SpotifyError> {
+        let url = format!(
+            "{}/me/player/volume?volume_percent={}",
+            API_BASE,
+            volume_percent.min(100)
+        );
+        self.api_put_empty(&url).await?;
+        Ok(())
     }
 }

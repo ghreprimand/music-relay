@@ -80,7 +80,7 @@ impl HeadlessConfig {
 
         println!("Music Relay -- First-time setup\n");
 
-        let server_url = prompt(&mut reader, "Server URL (e.g., https://sq.example.com): ")?;
+        let server_url = prompt(&mut reader, "Server URL (e.g., https://relay.example.com): ")?;
         let api_key = prompt(&mut reader, "API Key: ")?;
         let spotify_client_id = prompt(&mut reader, "Spotify Client ID: ")?;
         let poll_str = prompt(&mut reader, "Poll interval in seconds [5]: ")?;
