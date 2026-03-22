@@ -1,6 +1,6 @@
 [package]
 name = "music-relay"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 
 [lib]
@@ -27,3 +27,6 @@ tokio = { version = "1", features = ["full"] }
 log = "0.4"
 env_logger = "0.11"
 open = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
