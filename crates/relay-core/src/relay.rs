@@ -11,6 +11,8 @@ use crate::spotify::{SpotifyClient, SpotifyError};
 use crate::state::{AppState, ConnectionStatus, NowPlayingInfo};
 use crate::token;
 
+const CLAIM_TIMEOUT_SECS: u64 = 3;
+
 const MAX_RELAY_RETRIES: u32 = 5;
 
 /// Categorized relay errors to control retry behavior.
@@ -328,7 +330,34 @@ async fn run_with_centrifugo<P: RelayPlatform>(
                 cmd = command_rx.recv() => {
                     match cmd {
                         Some(cmd) => {
-                            let resp = handle_command(spotify, cmd).await;
+                            let name = command_name(&cmd);
+
+                            // Dedup mutating commands: if a nonce is present and the
+                            // command mutates state, claim it from the server first.
+                            let should_execute = match (cmd.is_mutating(), cmd.nonce()) {
+                                (true, Some(nonce)) => {
+                                    let claimed = try_claim_command(config, nonce).await;
+                                    if !claimed {
+                                        log::info!(
+                                            "Command {} claimed by another relay, skipping",
+                                            name,
+                                        );
+                                    }
+                                    claimed
+                                }
+                                _ => true,
+                            };
+
+                            let resp = if should_execute {
+                                handle_command(spotify, cmd).await
+                            } else {
+                                CommandResponse {
+                                    id: cmd.id().to_string(),
+                                    result: Some(serde_json::json!({})),
+                                    error: None,
+                                }
+                            };
+
                             persist_if_refreshed(platform, spotify);
                             if response_tx.send(resp).await.is_err() {
                                 log::warn!("Response channel closed, WebSocket likely disconnected");
@@ -517,10 +546,39 @@ fn command_name(cmd: &ServerCommand) -> &'static str {
     }
 }
 
+/// Attempt to claim a mutating command via the server. Returns true if this
+/// relay should execute the command, false if another relay already claimed it.
+/// Fail-open: if the claim request fails, we execute anyway.
+async fn try_claim_command(config: &RelayConfig, nonce: &str) -> bool {
+    let url = format!("{}/api/connector/claim-command", config.server_url);
+    let client = reqwest::Client::new();
+
+    let result = client
+        .post(&url)
+        .bearer_auth(&config.api_key)
+        .json(&serde_json::json!({ "nonce": nonce }))
+        .timeout(std::time::Duration::from_secs(CLAIM_TIMEOUT_SECS))
+        .send()
+        .await;
+
+    match result {
+        Ok(resp) if resp.status().is_success() => true,
+        Ok(resp) if resp.status().as_u16() == 409 => false,
+        Ok(resp) => {
+            log::warn!("Unexpected claim response status {}, executing anyway", resp.status());
+            true
+        }
+        Err(e) => {
+            log::warn!("Claim request failed: {}, executing anyway", e);
+            true
+        }
+    }
+}
+
 async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> CommandResponse {
     log::info!("Handling command: {}", command_name(&cmd));
     match cmd {
-        ServerCommand::GetNowPlaying { id } => {
+        ServerCommand::GetNowPlaying { id, .. } => {
             match spotify.get_now_playing().await {
                 Ok(np) => CommandResponse {
                     id,
@@ -530,7 +588,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::GetQueue { id } => {
+        ServerCommand::GetQueue { id, .. } => {
             match spotify.get_queue().await {
                 Ok(queue) => CommandResponse {
                     id,
@@ -540,7 +598,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::Search { id, query } => {
+        ServerCommand::Search { id, query, .. } => {
             match spotify.search(&query, 20).await {
                 Ok(results) => CommandResponse {
                     id,
@@ -550,7 +608,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::AddToQueue { id, track_uri } => {
+        ServerCommand::AddToQueue { id, track_uri, .. } => {
             match spotify.add_to_queue(&track_uri).await {
                 Ok(()) => CommandResponse {
                     id,
@@ -560,7 +618,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::GetPlaybackState { id } => {
+        ServerCommand::GetPlaybackState { id, .. } => {
             match spotify.get_playback_state().await {
                 Ok(state) => CommandResponse {
                     id,
@@ -570,7 +628,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::GetPlaylistTracks { id, playlist_id, offset, limit } => {
+        ServerCommand::GetPlaylistTracks { id, playlist_id, offset, limit, .. } => {
             match spotify.get_playlist_tracks(&playlist_id, offset.unwrap_or(0), limit.unwrap_or(100)).await {
                 Ok(tracks) => CommandResponse {
                     id,
@@ -580,7 +638,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::AddToPlaylist { id, playlist_id, uris, position } => {
+        ServerCommand::AddToPlaylist { id, playlist_id, uris, position, .. } => {
             match spotify.add_to_playlist(&playlist_id, uris, position).await {
                 Ok(snapshot_id) => CommandResponse {
                     id,
@@ -590,7 +648,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::RemoveFromPlaylist { id, playlist_id, uris } => {
+        ServerCommand::RemoveFromPlaylist { id, playlist_id, uris, .. } => {
             match spotify.remove_from_playlist(&playlist_id, uris).await {
                 Ok(snapshot_id) => CommandResponse {
                     id,
@@ -600,7 +658,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::ReplacePlaylist { id, playlist_id, uris } => {
+        ServerCommand::ReplacePlaylist { id, playlist_id, uris, .. } => {
             match spotify.replace_playlist_tracks(&playlist_id, uris).await {
                 Ok(snapshot_id) => CommandResponse {
                     id,
@@ -610,7 +668,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::CreatePlaylist { id, name, description, public } => {
+        ServerCommand::CreatePlaylist { id, name, description, public, .. } => {
             match spotify.create_playlist(&name, description.as_deref(), public.unwrap_or(false)).await {
                 Ok(playlist) => CommandResponse {
                     id,
@@ -620,7 +678,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::GetArtists { id, artist_ids } => {
+        ServerCommand::GetArtists { id, artist_ids, .. } => {
             match spotify.get_artists(&artist_ids).await {
                 Ok(artists) => CommandResponse {
                     id,
@@ -630,7 +688,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::GetPlaylistDetails { id, playlist_id } => {
+        ServerCommand::GetPlaylistDetails { id, playlist_id, .. } => {
             match spotify.get_playlist_details(&playlist_id).await {
                 Ok(details) => CommandResponse {
                     id,
@@ -640,7 +698,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::GetCurrentUser { id } => {
+        ServerCommand::GetCurrentUser { id, .. } => {
             match spotify.get_current_user().await {
                 Ok(user) => CommandResponse {
                     id,
@@ -650,7 +708,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => error_response(id, "spotify_error", &e.to_string()),
             }
         }
-        ServerCommand::Pause { id } => {
+        ServerCommand::Pause { id, .. } => {
             match spotify.pause().await {
                 Ok(()) => CommandResponse {
                     id,
@@ -660,7 +718,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => playback_error_response(id, &e),
             }
         }
-        ServerCommand::Resume { id } => {
+        ServerCommand::Resume { id, .. } => {
             match spotify.resume().await {
                 Ok(()) => CommandResponse {
                     id,
@@ -670,7 +728,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => playback_error_response(id, &e),
             }
         }
-        ServerCommand::SkipNext { id } => {
+        ServerCommand::SkipNext { id, .. } => {
             match spotify.skip_next().await {
                 Ok(()) => CommandResponse {
                     id,
@@ -680,7 +738,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => playback_error_response(id, &e),
             }
         }
-        ServerCommand::SkipPrevious { id } => {
+        ServerCommand::SkipPrevious { id, .. } => {
             match spotify.skip_previous().await {
                 Ok(()) => CommandResponse {
                     id,
@@ -690,7 +748,7 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => playback_error_response(id, &e),
             }
         }
-        ServerCommand::SetVolume { id, volume_percent } => {
+        ServerCommand::SetVolume { id, volume_percent, .. } => {
             match spotify.set_volume(volume_percent).await {
                 Ok(()) => CommandResponse {
                     id,
@@ -700,8 +758,8 @@ async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> Comm
                 Err(e) => playback_error_response(id, &e),
             }
         }
-        ServerCommand::FadeSkip { id } => handle_fade_skip(id, spotify).await,
-        ServerCommand::FadePause { id } => handle_fade_pause(id, spotify).await,
+        ServerCommand::FadeSkip { id, .. } => handle_fade_skip(id, spotify).await,
+        ServerCommand::FadePause { id, .. } => handle_fade_pause(id, spotify).await,
     }
 }
 

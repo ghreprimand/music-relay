@@ -114,21 +114,23 @@ struct Publication {
 #[serde(tag = "command")]
 pub enum ServerCommand {
     #[serde(rename = "get_now_playing")]
-    GetNowPlaying { id: String },
+    GetNowPlaying { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "get_queue")]
-    GetQueue { id: String },
+    GetQueue { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "search")]
-    Search { id: String, query: String },
+    Search { id: String, query: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "add_to_queue")]
-    AddToQueue { id: String, track_uri: String },
+    AddToQueue { id: String, track_uri: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "get_playback_state")]
-    GetPlaybackState { id: String },
+    GetPlaybackState { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "get_playlist_tracks")]
     GetPlaylistTracks {
         id: String,
         playlist_id: String,
         offset: Option<u32>,
         limit: Option<u32>,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "add_to_playlist")]
     AddToPlaylist {
@@ -136,18 +138,24 @@ pub enum ServerCommand {
         playlist_id: String,
         uris: Vec<String>,
         position: Option<u32>,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "remove_from_playlist")]
     RemoveFromPlaylist {
         id: String,
         playlist_id: String,
         uris: Vec<String>,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "replace_playlist")]
     ReplacePlaylist {
         id: String,
         playlist_id: String,
         uris: Vec<String>,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "create_playlist")]
     CreatePlaylist {
@@ -155,33 +163,112 @@ pub enum ServerCommand {
         name: String,
         description: Option<String>,
         public: Option<bool>,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "get_artists")]
     GetArtists {
         id: String,
         artist_ids: Vec<String>,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "get_playlist_details")]
     GetPlaylistDetails {
         id: String,
         playlist_id: String,
+        #[serde(default)]
+        nonce: Option<String>,
     },
     #[serde(rename = "get_current_user")]
-    GetCurrentUser { id: String },
+    GetCurrentUser { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "pause")]
-    Pause { id: String },
+    Pause { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "resume")]
-    Resume { id: String },
+    Resume { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "skip_next")]
-    SkipNext { id: String },
+    SkipNext { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "skip_previous")]
-    SkipPrevious { id: String },
+    SkipPrevious { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "set_volume")]
-    SetVolume { id: String, volume_percent: u32 },
+    SetVolume { id: String, volume_percent: u32, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "fade_skip")]
-    FadeSkip { id: String },
+    FadeSkip { id: String, #[serde(default)] nonce: Option<String> },
     #[serde(rename = "fade_pause")]
-    FadePause { id: String },
+    FadePause { id: String, #[serde(default)] nonce: Option<String> },
+}
+
+impl ServerCommand {
+    /// Returns the command id.
+    pub fn id(&self) -> &str {
+        match self {
+            ServerCommand::GetNowPlaying { id, .. }
+            | ServerCommand::GetQueue { id, .. }
+            | ServerCommand::Search { id, .. }
+            | ServerCommand::AddToQueue { id, .. }
+            | ServerCommand::GetPlaybackState { id, .. }
+            | ServerCommand::GetPlaylistTracks { id, .. }
+            | ServerCommand::AddToPlaylist { id, .. }
+            | ServerCommand::RemoveFromPlaylist { id, .. }
+            | ServerCommand::ReplacePlaylist { id, .. }
+            | ServerCommand::CreatePlaylist { id, .. }
+            | ServerCommand::GetArtists { id, .. }
+            | ServerCommand::GetPlaylistDetails { id, .. }
+            | ServerCommand::GetCurrentUser { id, .. }
+            | ServerCommand::Pause { id, .. }
+            | ServerCommand::Resume { id, .. }
+            | ServerCommand::SkipNext { id, .. }
+            | ServerCommand::SkipPrevious { id, .. }
+            | ServerCommand::SetVolume { id, .. }
+            | ServerCommand::FadeSkip { id, .. }
+            | ServerCommand::FadePause { id, .. } => id,
+        }
+    }
+
+    /// Returns the nonce if present.
+    pub fn nonce(&self) -> Option<&str> {
+        match self {
+            ServerCommand::GetNowPlaying { nonce, .. }
+            | ServerCommand::GetQueue { nonce, .. }
+            | ServerCommand::Search { nonce, .. }
+            | ServerCommand::AddToQueue { nonce, .. }
+            | ServerCommand::GetPlaybackState { nonce, .. }
+            | ServerCommand::GetPlaylistTracks { nonce, .. }
+            | ServerCommand::AddToPlaylist { nonce, .. }
+            | ServerCommand::RemoveFromPlaylist { nonce, .. }
+            | ServerCommand::ReplacePlaylist { nonce, .. }
+            | ServerCommand::CreatePlaylist { nonce, .. }
+            | ServerCommand::GetArtists { nonce, .. }
+            | ServerCommand::GetPlaylistDetails { nonce, .. }
+            | ServerCommand::GetCurrentUser { nonce, .. }
+            | ServerCommand::Pause { nonce, .. }
+            | ServerCommand::Resume { nonce, .. }
+            | ServerCommand::SkipNext { nonce, .. }
+            | ServerCommand::SkipPrevious { nonce, .. }
+            | ServerCommand::SetVolume { nonce, .. }
+            | ServerCommand::FadeSkip { nonce, .. }
+            | ServerCommand::FadePause { nonce, .. } => nonce.as_deref(),
+        }
+    }
+
+    /// Returns true for commands that mutate Spotify state (playback, queue, playlists).
+    pub fn is_mutating(&self) -> bool {
+        matches!(
+            self,
+            ServerCommand::AddToQueue { .. }
+                | ServerCommand::AddToPlaylist { .. }
+                | ServerCommand::RemoveFromPlaylist { .. }
+                | ServerCommand::ReplacePlaylist { .. }
+                | ServerCommand::CreatePlaylist { .. }
+                | ServerCommand::Pause { .. }
+                | ServerCommand::Resume { .. }
+                | ServerCommand::SkipNext { .. }
+                | ServerCommand::SkipPrevious { .. }
+                | ServerCommand::SetVolume { .. }
+                | ServerCommand::FadeSkip { .. }
+                | ServerCommand::FadePause { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

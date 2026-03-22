@@ -255,6 +255,17 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // Hide the dock icon on macOS (accessory/tray-only mode)
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
+                unsafe {
+                    NSApp().setActivationPolicy_(
+                        NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
+                    );
+                }
+            }
+
             let store = app.store("config.json")?;
             let config = TauriAppConfig::from_store(&store);
             let configured = config.is_configured();
