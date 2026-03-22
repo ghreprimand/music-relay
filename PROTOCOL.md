@@ -32,7 +32,7 @@ Music Relay connects to a [Centrifugo](https://centrifugal.dev/) server using th
 
 ## Server Commands
 
-Commands are delivered as Centrifugo publication data. Each command has a `command` field for routing and an `id` field for correlating responses.
+Commands are delivered as Centrifugo publication data. Each command has a `command` field for routing and an `id` field for correlating responses. Mutating commands may include an optional `nonce` field (UUID string) for deduplication -- see [Command Deduplication](#command-deduplication) below.
 
 ### `get_now_playing`
 
@@ -529,6 +529,44 @@ Or with warning:
 ```
 
 Gradually reduces volume to zero (5 steps, ~200ms apart), pauses playback, then restores the original volume (so it is correct when playback is resumed). If the current volume cannot be read, pauses without fading and returns a warning. Requires Spotify Premium.
+
+## Command Deduplication
+
+When multiple relay instances are subscribed to the same channel, mutating commands would be executed by each instance. To prevent this, the server can include a `nonce` field (UUID string) on mutating commands. The relay uses this nonce to claim exclusive execution rights before proceeding.
+
+### Nonce Field
+
+Any command may include an optional `nonce` field:
+
+```json
+{
+  "command": "add_to_queue",
+  "id": "req-004",
+  "track_uri": "spotify:track:4iV5W9uYEdYUVa79Axb7Rh",
+  "nonce": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+The `nonce` is ignored by the relay for read-only commands (`get_now_playing`, `get_queue`, `search`, `get_playback_state`, `get_playlist_tracks`, `get_playlist_details`, `get_artists`, `get_current_user`). For mutating commands (`add_to_queue`, `add_to_playlist`, `remove_from_playlist`, `replace_playlist`, `create_playlist`, `pause`, `resume`, `skip_next`, `skip_previous`, `set_volume`, `fade_skip`, `fade_pause`), the relay performs a claim check before executing.
+
+### Claim Endpoint
+
+```
+POST {server_url}/api/connector/claim-command
+Authorization: Bearer {api_key}
+Content-Type: application/json
+
+{ "nonce": "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+| Status | Meaning |
+|--------|---------|
+| 200 OK | This relay claimed the command; proceed with execution |
+| 409 Conflict | Another relay already claimed it; skip execution |
+
+The claim request uses a 3-second timeout. If the request fails for any reason (network error, timeout, non-200/409 status), the relay executes the command anyway (fail-open). When a command is skipped, the relay still returns a success response so the server does not interpret it as a failure.
+
+If no `nonce` is present (backwards compatibility), the claim check is skipped and the command executes normally.
 
 ## Client Responses
 
