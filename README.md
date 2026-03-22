@@ -258,6 +258,12 @@ To avoid a brief disconnect when the token expires server-side, the relay decode
 - The stored refresh token is cleared so the next restart triggers a fresh OAuth flow
 - Desktop: the error is shown in the Status UI with a Reconnect button
 
+### Command Deduplication
+
+If multiple relay instances are connected to the same channel (e.g. on two machines, or a leftover background process), mutating commands could be executed more than once. To prevent this, the server can include a `nonce` (UUID) on mutating commands. When a nonce is present, the relay calls `POST {server_url}/api/connector/claim-command` with `{ "nonce": "<value>" }` and the API key as a Bearer token before executing. If the server responds with 200, the relay executes the command. If 409, another relay already claimed it and execution is skipped. If the claim request fails for any reason, the relay executes the command anyway (fail-open).
+
+Read-only commands (`get_now_playing`, `get_queue`, `search`, `get_playback_state`, `get_playlist_tracks`, `get_playlist_details`, `get_artists`, `get_current_user`) are not subject to deduplication.
+
 ### Dual Mode
 
 - **Full mode:** Spotify polling + Centrifugo command dispatch (when server URL and API key are configured)
@@ -287,6 +293,7 @@ To avoid a brief disconnect when the token expires server-side, the relay decode
 - Menu items: Show, Status (read-only, updates dynamically), Quit
 - Tooltip updates with current track: "Music Relay - Artist - Track"
 - Close-to-tray: window hides on close instead of quitting (configurable)
+- macOS: runs in accessory mode (no dock icon, tray only)
 
 ## First-Run Setup
 
@@ -352,7 +359,7 @@ cross build --release --target aarch64-unknown-linux-gnu -p relay-headless
 ### CI
 
 GitHub Actions workflow (`.github/workflows/build.yml`) builds:
-- **Desktop:** `ubuntu-22.04` and `windows-latest` via `tauri-action`
+- **Desktop:** `ubuntu-22.04`, `windows-latest`, and `macos-latest` via `tauri-action`
 - **Headless:** `x86_64-unknown-linux-gnu` (native) and `aarch64-unknown-linux-gnu` (via `cross`)
 
 Draft releases are created automatically on tag push (`v*`), including all desktop and headless binaries.
@@ -385,6 +392,7 @@ Draft releases are created automatically on tag push (`v*`), including all deskt
 | `tauri-plugin-autostart` | OS-level autostart registration |
 | `tauri-plugin-notification` | System notifications for relay failures |
 | `open` | Open browser for OAuth (non-Linux) |
+| `cocoa` | macOS-only: NSApplication activation policy (dock hiding) |
 | `env_logger` | Log output |
 
 ### relay-headless

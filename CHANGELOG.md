@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0
+
+### Features
+
+- **Command deduplication:** Mutating commands now support an optional `nonce` field. When present, the relay claims the command from the server before executing, preventing duplicate execution when multiple relay instances are connected to the same channel. Fail-open: if the claim endpoint is unreachable, the command executes normally.
+- **macOS dock hiding:** The desktop app now runs in accessory mode on macOS, removing the dock icon and keeping it tray-only. No impact on Linux or Windows.
+- Added `cocoa` as a macOS-only dependency for native AppKit integration.
+
 ## 1.4.0
 
 ### Features
