@@ -1,5 +1,15 @@
 # Changelog
 
+<!--
+  VERSION BUMP CHECKLIST:
+    1. package.json
+    2. src-tauri/tauri.conf.json
+    3. src-tauri/Cargo.toml
+    4. crates/relay-core/Cargo.toml
+    5. crates/relay-headless/Cargo.toml
+    6. src-tauri/music-relay.desktop  (X-AppImage-Version — hardcoded, not auto-derived)
+-->
+
 ## 1.5.2
 
 ### Features
