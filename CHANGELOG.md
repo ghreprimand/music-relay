@@ -14,7 +14,6 @@
 ### Features
 
 - `--version` / `-V` CLI flag prints the version and exits.
-- AppImage embeds `X-AppImage-Version` in its `.desktop` metadata for package manager detection.
 
 ## 1.5.1
 
