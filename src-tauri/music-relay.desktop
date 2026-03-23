@@ -1,3 +1,6 @@
+# NOTE: X-AppImage-Version below must be updated when bumping the app version.
+# Tauri's Handlebars template does not expose a {{version}} variable, so this
+# value is hardcoded. Update it alongside tauri.conf.json, Cargo.toml, etc.
 [Desktop Entry]
 Categories={{categories}}
 {{#if comment}}
