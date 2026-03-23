@@ -52,26 +52,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Patch AppImage with version metadata and create stable-named copy
+      - name: Copy stable-named AppImage
         if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          cd target/release/bundle/appimage
-          VERSIONED=$(ls *.AppImage)
-          VERSION=$(grep '"version"' ../../../../src-tauri/tauri.conf.json | head -1 | sed 's/.*: *"\(.*\)".*/\1/')
-
-          # Extract, patch .desktop with X-AppImage-Version, repack
-          chmod +x "$VERSIONED"
-          ./"$VERSIONED" --appimage-extract > /dev/null 2>&1
-          for desktop in squashfs-root/*.desktop squashfs-root/usr/share/applications/*.desktop; do
-            [ -f "$desktop" ] && echo "X-AppImage-Version=$VERSION" >> "$desktop"
-          done
-
-          # Download appimagetool to repack
-          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool
-          ARCH=x86_64 ./appimagetool --no-appstream squashfs-root "$VERSIONED"
-          cp "$VERSIONED" Music_Relay.AppImage
-          rm -rf squashfs-root appimagetool
+        run: cp target/release/bundle/appimage/*.AppImage target/release/bundle/appimage/Music_Relay.AppImage
 
       - name: Upload Tauri artifacts
         uses: actions/upload-artifact@v4
