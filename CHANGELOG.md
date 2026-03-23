@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.1
+
+### Changes
+
+- AppImage builds now include a stable-named `Music_Relay.AppImage` alongside the versioned file, so desktop launcher shortcuts survive upgrades.
+
 ## 1.5.0
 
 ### Features
