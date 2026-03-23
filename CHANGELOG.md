@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.2
+
+### Features
+
+- `--version` / `-V` CLI flag prints the version and exits.
+- AppImage `.desktop` entry now includes `X-AppImage-Version` metadata.
+
 ## 1.5.1
 
 ### Changes
