@@ -7,7 +7,6 @@
     3. src-tauri/Cargo.toml
     4. crates/relay-core/Cargo.toml
     5. crates/relay-headless/Cargo.toml
-    6. src-tauri/music-relay.desktop  (X-AppImage-Version — hardcoded, not auto-derived)
 -->
 
 ## 1.5.2
@@ -15,7 +14,7 @@
 ### Features
 
 - `--version` / `-V` CLI flag prints the version and exits.
-- AppImage `.desktop` entry now includes `X-AppImage-Version` metadata.
+- AppImage embeds `X-AppImage-Version` in its `.desktop` metadata for package manager detection.
 
 ## 1.5.1
 
