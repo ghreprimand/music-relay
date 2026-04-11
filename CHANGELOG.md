@@ -9,6 +9,17 @@
     5. crates/relay-headless/Cargo.toml
 -->
 
+## 1.6.0
+
+### Changes
+
+- **Concurrent command handling.** Incoming commands are now dispatched on independent async tasks instead of being processed one at a time. A slow Spotify API call no longer serializes other commands, blocks the now-playing ticker, or delays shutdown. The wire protocol is unchanged -- responses are correlated by ID, so order on the return channel was already irrelevant.
+- `SpotifyClient` refactored to interior mutability so its methods take `&self`, enabling the client to be shared across tasks via `Arc`. Token refresh is still serialized internally (briefly holds a mutex across the refresh call) so concurrent callers all observe a consistent token.
+
+### Fixes
+
+- Resolves intermittent 5-second command timeouts observed when two or more commands arrived in quick succession and a single slow Spotify response pushed the second command past the server-side polling deadline.
+
 ## 1.5.2
 
 ### Features

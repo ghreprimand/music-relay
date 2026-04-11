@@ -67,7 +67,7 @@ pub fn start_relay<P: RelayPlatform>(
 
             connected.store(false, Ordering::Relaxed);
 
-            match run_relay(&*platform, &config, shutdown_rx.clone(), connected.clone()).await {
+            match run_relay(platform.clone(), &config, shutdown_rx.clone(), connected.clone()).await {
                 Ok(()) => return,
                 Err(RelayError::NeedsAuth(msg)) => {
                     // Auth failures require user action -- don't retry
@@ -133,7 +133,7 @@ pub fn start_relay<P: RelayPlatform>(
 }
 
 async fn run_relay<P: RelayPlatform>(
-    platform: &P,
+    platform: Arc<P>,
     config: &RelayConfig,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
     connected: Arc<AtomicBool>,
@@ -145,10 +145,10 @@ async fn run_relay<P: RelayPlatform>(
     });
     platform.emit_status();
 
-    let tokens = authenticate_spotify(platform, config).await?;
+    let tokens = authenticate_spotify(&*platform, config).await?;
 
-    let mut spotify = SpotifyClient::new(config.spotify_client_id.clone());
-    spotify.set_tokens(&tokens);
+    let spotify = Arc::new(SpotifyClient::new(config.spotify_client_id.clone()));
+    spotify.set_tokens(&tokens).await;
 
     platform.persist_refresh_token(&tokens.refresh_token);
 
@@ -165,11 +165,11 @@ async fn run_relay<P: RelayPlatform>(
     let has_server = !config.server_url.is_empty() && !config.api_key.is_empty();
 
     if has_server {
-        run_with_centrifugo(platform, config, &mut spotify, shutdown_rx)
+        run_with_centrifugo(platform, config, spotify, shutdown_rx)
             .await
             .map_err(|e| RelayError::Transient(e.to_string()))
     } else {
-        run_poll_only(platform, config, &mut spotify, shutdown_rx)
+        run_poll_only(platform, config, spotify, shutdown_rx)
             .await
             .map_err(|e| RelayError::Transient(e.to_string()))
     }
@@ -177,9 +177,9 @@ async fn run_relay<P: RelayPlatform>(
 
 /// Full mode: Spotify polling + Centrifugo command dispatch.
 async fn run_with_centrifugo<P: RelayPlatform>(
-    platform: &P,
+    platform: Arc<P>,
     config: &RelayConfig,
-    spotify: &mut SpotifyClient,
+    spotify: Arc<SpotifyClient>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut reconnect_attempt: u32 = 0;
@@ -311,7 +311,7 @@ async fn run_with_centrifugo<P: RelayPlatform>(
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    let broadcast = poll_now_playing(platform, spotify, &mut last_track_uri).await;
+                    let broadcast = poll_now_playing(&*platform, &spotify, &mut last_track_uri).await;
                     if let Some(data) = broadcast {
                         let msg = CommandResponse {
                             id: String::new(),
@@ -326,43 +326,59 @@ async fn run_with_centrifugo<P: RelayPlatform>(
                             break;
                         }
                     }
+                    persist_if_refreshed(&*platform, &spotify).await;
                 }
                 cmd = command_rx.recv() => {
                     match cmd {
                         Some(cmd) => {
                             let name = command_name(&cmd);
+                            log::debug!("Dispatching command: {}", name);
 
-                            // Dedup mutating commands: if a nonce is present and the
-                            // command mutates state, claim it from the server first.
-                            let should_execute = match (cmd.is_mutating(), cmd.nonce()) {
-                                (true, Some(nonce)) => {
-                                    let claimed = try_claim_command(config, nonce).await;
-                                    if !claimed {
-                                        log::info!(
-                                            "Command {} claimed by another relay, skipping",
-                                            name,
-                                        );
+                            // Spawn the handler so slow Spotify API calls don't
+                            // serialize with each other, block the now-playing
+                            // ticker, or delay shutdown. The wire protocol is
+                            // correlation-ID based, so response order is free.
+                            let spotify_c = spotify.clone();
+                            let platform_c = platform.clone();
+                            let response_tx_c = response_tx.clone();
+                            let config_c = config.clone();
+
+                            tokio::spawn(async move {
+                                // Dedup mutating commands: if a nonce is present
+                                // and the command mutates state, claim it from
+                                // the server first.
+                                let should_execute = match (cmd.is_mutating(), cmd.nonce()) {
+                                    (true, Some(nonce)) => {
+                                        let claimed = try_claim_command(&config_c, nonce).await;
+                                        if !claimed {
+                                            log::info!(
+                                                "Command {} claimed by another relay, skipping",
+                                                name,
+                                            );
+                                        }
+                                        claimed
                                     }
-                                    claimed
-                                }
-                                _ => true,
-                            };
+                                    _ => true,
+                                };
 
-                            let resp = if should_execute {
-                                handle_command(spotify, cmd).await
-                            } else {
-                                CommandResponse {
-                                    id: cmd.id().to_string(),
-                                    result: Some(serde_json::json!({})),
-                                    error: None,
-                                }
-                            };
+                                let resp = if should_execute {
+                                    handle_command(&spotify_c, cmd).await
+                                } else {
+                                    CommandResponse {
+                                        id: cmd.id().to_string(),
+                                        result: Some(serde_json::json!({})),
+                                        error: None,
+                                    }
+                                };
 
-                            persist_if_refreshed(platform, spotify);
-                            if response_tx.send(resp).await.is_err() {
-                                log::warn!("Response channel closed, WebSocket likely disconnected");
-                                break;
-                            }
+                                persist_if_refreshed(&*platform_c, &spotify_c).await;
+                                if response_tx_c.send(resp).await.is_err() {
+                                    log::warn!(
+                                        "Response channel closed, dropping {} response",
+                                        name
+                                    );
+                                }
+                            });
                         }
                         None => {
                             // command_tx dropped = WebSocket task ended
@@ -415,9 +431,9 @@ async fn run_with_centrifugo<P: RelayPlatform>(
 
 /// Spotify-only mode: just poll now-playing without a WebSocket connection.
 async fn run_poll_only<P: RelayPlatform>(
-    platform: &P,
+    platform: Arc<P>,
     config: &RelayConfig,
-    spotify: &mut SpotifyClient,
+    spotify: Arc<SpotifyClient>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     log::info!("Running in poll-only mode (no server configured)");
@@ -429,8 +445,8 @@ async fn run_poll_only<P: RelayPlatform>(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                poll_now_playing(platform, spotify, &mut last_track_uri).await;
-                persist_if_refreshed(platform, spotify);
+                poll_now_playing(&*platform, &spotify, &mut last_track_uri).await;
+                persist_if_refreshed(&*platform, &spotify).await;
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -450,7 +466,7 @@ async fn run_poll_only<P: RelayPlatform>(
 /// (for broadcasting over WebSocket).
 async fn poll_now_playing<P: RelayPlatform>(
     platform: &P,
-    spotify: &mut SpotifyClient,
+    spotify: &SpotifyClient,
     last_track_uri: &mut Option<String>,
 ) -> Option<NowPlayingInfo> {
     match spotify.get_now_playing().await {
@@ -481,7 +497,7 @@ async fn poll_now_playing<P: RelayPlatform>(
             });
             platform.emit_status();
 
-            if let Some(token) = spotify.take_refreshed_token() {
+            if let Some(token) = spotify.take_refreshed_token().await {
                 platform.persist_refresh_token(&token);
             }
 
@@ -575,7 +591,7 @@ async fn try_claim_command(config: &RelayConfig, nonce: &str) -> bool {
     }
 }
 
-async fn handle_command(spotify: &mut SpotifyClient, cmd: ServerCommand) -> CommandResponse {
+async fn handle_command(spotify: &SpotifyClient, cmd: ServerCommand) -> CommandResponse {
     log::info!("Handling command: {}", command_name(&cmd));
     match cmd {
         ServerCommand::GetNowPlaying { id, .. } => {
@@ -787,7 +803,7 @@ fn playback_error_response(id: String, e: &SpotifyError) -> CommandResponse {
     error_response(id, &code, &message)
 }
 
-async fn handle_fade_skip(id: String, spotify: &mut SpotifyClient) -> CommandResponse {
+async fn handle_fade_skip(id: String, spotify: &SpotifyClient) -> CommandResponse {
     let current_volume = match spotify.get_playback_state().await {
         Ok(Some(state)) => state.device.and_then(|d| d.volume_percent),
         Ok(None) => {
@@ -846,7 +862,7 @@ async fn handle_fade_skip(id: String, spotify: &mut SpotifyClient) -> CommandRes
     }
 }
 
-async fn handle_fade_pause(id: String, spotify: &mut SpotifyClient) -> CommandResponse {
+async fn handle_fade_pause(id: String, spotify: &SpotifyClient) -> CommandResponse {
     let current_volume = match spotify.get_playback_state().await {
         Ok(Some(state)) => state.device.and_then(|d| d.volume_percent),
         Ok(None) => {
@@ -943,8 +959,8 @@ async fn authenticate_spotify<P: RelayPlatform>(
     Ok(tokens)
 }
 
-fn persist_if_refreshed<P: RelayPlatform>(platform: &P, spotify: &mut SpotifyClient) {
-    if let Some(token) = spotify.take_refreshed_token() {
+async fn persist_if_refreshed<P: RelayPlatform>(platform: &P, spotify: &SpotifyClient) {
+    if let Some(token) = spotify.take_refreshed_token().await {
         platform.persist_refresh_token(&token);
     }
 }
