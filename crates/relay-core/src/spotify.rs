@@ -10,6 +10,8 @@ const API_BASE: &str = "https://api.spotify.com/v1";
 pub enum SpotifyError {
     #[error("Not authenticated")]
     NotAuthenticated,
+    #[error("Spotify authorization is required. Reconnect Spotify in Music Relay.")]
+    AuthRequired,
     #[error("Spotify API error: {status} {message}")]
     Api { status: u16, message: String },
     #[error("Token refresh failed: {0}")]
@@ -172,6 +174,7 @@ struct TokenState {
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_at: u64,
+    auth_required: bool,
     /// Set when a token refresh occurs, cleared by `take_refreshed_token`.
     pending_refresh_token: Option<String>,
 }
@@ -197,6 +200,7 @@ impl SpotifyClient {
                 access_token: None,
                 refresh_token: None,
                 expires_at: 0,
+                auth_required: false,
                 pending_refresh_token: None,
             }),
             cached_user: Mutex::new(None),
@@ -208,6 +212,8 @@ impl SpotifyClient {
         t.access_token = Some(tokens.access_token.clone());
         t.refresh_token = Some(tokens.refresh_token.clone());
         t.expires_at = tokens.expires_at;
+        t.auth_required = false;
+        t.pending_refresh_token = None;
     }
 
     fn is_expired(expires_at: u64) -> bool {
@@ -225,6 +231,10 @@ impl SpotifyClient {
     /// immediately, allowing concurrent API calls.
     async fn ensure_token(&self) -> Result<String, SpotifyError> {
         let mut t = self.tokens.lock().await;
+        if t.auth_required {
+            return Err(SpotifyError::AuthRequired);
+        }
+
         if !Self::is_expired(t.expires_at) {
             return t.access_token.clone().ok_or(SpotifyError::NotAuthenticated);
         }
@@ -235,14 +245,24 @@ impl SpotifyClient {
             .ok_or(SpotifyError::NotAuthenticated)?;
 
         log::info!("Access token expired, refreshing");
-        let new_tokens = oauth::refresh_access_token(&self.client_id, &refresh)
-            .await
-            .map_err(|e| SpotifyError::RefreshFailed(e.to_string()))?;
+        let new_tokens = match oauth::refresh_access_token(&self.client_id, &refresh).await {
+            Ok(tokens) => tokens,
+            Err(e) if e.is_invalid_grant() => {
+                t.access_token = None;
+                t.refresh_token = None;
+                t.expires_at = 0;
+                t.auth_required = true;
+                t.pending_refresh_token = None;
+                return Err(SpotifyError::AuthRequired);
+            }
+            Err(e) => return Err(SpotifyError::RefreshFailed(e.to_string())),
+        };
 
         let access = new_tokens.access_token.clone();
         t.access_token = Some(new_tokens.access_token);
         t.refresh_token = Some(new_tokens.refresh_token.clone());
         t.expires_at = new_tokens.expires_at;
+        t.auth_required = false;
         t.pending_refresh_token = Some(new_tokens.refresh_token);
         Ok(access)
     }
@@ -258,6 +278,19 @@ impl SpotifyClient {
     pub async fn take_refreshed_token(&self) -> Option<String> {
         let mut t = self.tokens.lock().await;
         t.pending_refresh_token.take()
+    }
+
+    pub async fn mark_auth_required(&self) {
+        let mut t = self.tokens.lock().await;
+        t.access_token = None;
+        t.refresh_token = None;
+        t.expires_at = 0;
+        t.auth_required = true;
+        t.pending_refresh_token = None;
+    }
+
+    pub async fn is_auth_required(&self) -> bool {
+        self.tokens.lock().await.auth_required
     }
 
     async fn api_get(&self, url: &str) -> Result<reqwest::Response, SpotifyError> {
@@ -276,45 +309,93 @@ impl SpotifyClient {
         self.check_response(resp).await
     }
 
-    async fn api_post(&self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, SpotifyError> {
+    async fn api_post(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::Response, SpotifyError> {
         let token = self.ensure_token().await?;
-        let resp = self.http.post(url).bearer_auth(&token).json(&body).send().await?;
+        let resp = self
+            .http
+            .post(url)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await?;
 
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             log::warn!("Got 401 from Spotify POST, attempting token refresh");
             self.invalidate_token().await;
             let token = self.ensure_token().await?;
-            let resp = self.http.post(url).bearer_auth(&token).json(&body).send().await?;
+            let resp = self
+                .http
+                .post(url)
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await?;
             return self.check_response(resp).await;
         }
 
         self.check_response(resp).await
     }
 
-    async fn api_put(&self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, SpotifyError> {
+    async fn api_put(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::Response, SpotifyError> {
         let token = self.ensure_token().await?;
-        let resp = self.http.put(url).bearer_auth(&token).json(&body).send().await?;
+        let resp = self
+            .http
+            .put(url)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await?;
 
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             log::warn!("Got 401 from Spotify PUT, attempting token refresh");
             self.invalidate_token().await;
             let token = self.ensure_token().await?;
-            let resp = self.http.put(url).bearer_auth(&token).json(&body).send().await?;
+            let resp = self
+                .http
+                .put(url)
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await?;
             return self.check_response(resp).await;
         }
 
         self.check_response(resp).await
     }
 
-    async fn api_delete(&self, url: &str, body: serde_json::Value) -> Result<reqwest::Response, SpotifyError> {
+    async fn api_delete(
+        &self,
+        url: &str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::Response, SpotifyError> {
         let token = self.ensure_token().await?;
-        let resp = self.http.delete(url).bearer_auth(&token).json(&body).send().await?;
+        let resp = self
+            .http
+            .delete(url)
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await?;
 
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             log::warn!("Got 401 from Spotify DELETE, attempting token refresh");
             self.invalidate_token().await;
             let token = self.ensure_token().await?;
-            let resp = self.http.delete(url).bearer_auth(&token).json(&body).send().await?;
+            let resp = self
+                .http
+                .delete(url)
+                .bearer_auth(&token)
+                .json(&body)
+                .send()
+                .await?;
             return self.check_response(resp).await;
         }
 
@@ -338,7 +419,9 @@ impl SpotifyClient {
 
     async fn api_post_empty(&self, url: &str) -> Result<reqwest::Response, SpotifyError> {
         let token = self.ensure_token().await?;
-        let resp = self.http.post(url)
+        let resp = self
+            .http
+            .post(url)
             .bearer_auth(&token)
             .header("Content-Length", "0")
             .send()
@@ -348,7 +431,9 @@ impl SpotifyClient {
             log::warn!("Got 401 on POST, attempting token refresh");
             self.invalidate_token().await;
             let token = self.ensure_token().await?;
-            let resp = self.http.post(url)
+            let resp = self
+                .http
+                .post(url)
                 .bearer_auth(&token)
                 .header("Content-Length", "0")
                 .send()
@@ -361,7 +446,9 @@ impl SpotifyClient {
 
     async fn api_put_empty(&self, url: &str) -> Result<reqwest::Response, SpotifyError> {
         let token = self.ensure_token().await?;
-        let resp = self.http.put(url)
+        let resp = self
+            .http
+            .put(url)
             .bearer_auth(&token)
             .header("Content-Length", "0")
             .send()
@@ -371,7 +458,9 @@ impl SpotifyClient {
             log::warn!("Got 401 on PUT, attempting token refresh");
             self.invalidate_token().await;
             let token = self.ensure_token().await?;
-            let resp = self.http.put(url)
+            let resp = self
+                .http
+                .put(url)
                 .bearer_auth(&token)
                 .header("Content-Length", "0")
                 .send()
@@ -401,11 +490,7 @@ impl SpotifyClient {
         Ok(body)
     }
 
-    pub async fn search(
-        &self,
-        query: &str,
-        limit: u32,
-    ) -> Result<SearchResponse, SpotifyError> {
+    pub async fn search(&self, query: &str, limit: u32) -> Result<SearchResponse, SpotifyError> {
         let url = format!(
             "{}/search?q={}&type=track&limit={}",
             API_BASE,

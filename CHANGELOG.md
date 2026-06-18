@@ -9,6 +9,18 @@
     5. crates/relay-headless/Cargo.toml
 -->
 
+## 1.6.1
+
+### Fixes
+
+- **Spotify authorization expiry handling.** Expired or revoked Spotify refresh tokens now put the relay into a reconnect-required state immediately instead of retrying the same token.
+- Runtime Spotify refresh failures that require user action now clear stored token state, stop repeated refresh attempts, and return the protocol error `spotify_auth_required` to pending commands.
+- Now-playing polling skips Spotify calls while authorization is required, preventing repeated failed refresh attempts until the operator reconnects Spotify.
+
+### Protocol
+
+- Added `spotify_auth_required` for commands that cannot run until Spotify authorization is completed again.
+
 ## 1.6.0
 
 ### Changes

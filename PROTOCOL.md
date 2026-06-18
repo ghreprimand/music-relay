@@ -598,6 +598,7 @@ Every response is published to the channel as Centrifugo publication data. Respo
 | Code | Meaning |
 |------|---------|
 | `spotify_error` | Spotify API returned an error (message contains details) |
+| `spotify_auth_required` | Spotify authorization must be completed again before commands can run |
 | `forbidden` | Spotify returned 403 (e.g. Premium required) |
 | `no_device` | No active Spotify device (Spotify returned 404) |
 | `rate_limited` | Spotify rate limit exceeded (429) |

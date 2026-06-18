@@ -14,6 +14,9 @@ use crate::token;
 const CLAIM_TIMEOUT_SECS: u64 = 3;
 
 const MAX_RELAY_RETRIES: u32 = 5;
+const SPOTIFY_AUTH_REQUIRED_CODE: &str = "spotify_auth_required";
+const SPOTIFY_AUTH_REQUIRED_MESSAGE: &str =
+    "Spotify authorization is required. Reconnect Spotify in Music Relay.";
 
 /// Categorized relay errors to control retry behavior.
 enum RelayError {
@@ -67,7 +70,14 @@ pub fn start_relay<P: RelayPlatform>(
 
             connected.store(false, Ordering::Relaxed);
 
-            match run_relay(platform.clone(), &config, shutdown_rx.clone(), connected.clone()).await {
+            match run_relay(
+                platform.clone(),
+                &config,
+                shutdown_rx.clone(),
+                connected.clone(),
+            )
+            .await
+            {
                 Ok(()) => return,
                 Err(RelayError::NeedsAuth(msg)) => {
                     // Auth failures require user action -- don't retry
@@ -196,34 +206,30 @@ async fn run_with_centrifugo<P: RelayPlatform>(
         platform.emit_status();
 
         // Fetch fresh token and derive connection params on every connect/reconnect
-        let (ws_url, centrifugo_token, channel) = match token::fetch_connection_params(
-            &config.server_url,
-            &config.api_key,
-        )
-        .await
-        {
-            Ok(params) => params,
-            Err(e) => {
-                log::warn!("Token fetch failed: {}", e);
-                platform.update_state(|state| {
-                    state.websocket_status = ConnectionStatus::Disconnected;
-                    state.last_error = Some(format!("Token: {}", e));
-                });
-                platform.emit_status();
+        let (ws_url, centrifugo_token, channel) =
+            match token::fetch_connection_params(&config.server_url, &config.api_key).await {
+                Ok(params) => params,
+                Err(e) => {
+                    log::warn!("Token fetch failed: {}", e);
+                    platform.update_state(|state| {
+                        state.websocket_status = ConnectionStatus::Disconnected;
+                        state.last_error = Some(format!("Token: {}", e));
+                    });
+                    platform.emit_status();
 
-                let delay = centrifugo::backoff_delay(reconnect_attempt);
-                reconnect_attempt += 1;
-                log::info!("Reconnecting in {:?}", delay);
+                    let delay = centrifugo::backoff_delay(reconnect_attempt);
+                    reconnect_attempt += 1;
+                    log::info!("Reconnecting in {:?}", delay);
 
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => continue,
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() { return Ok(()); }
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => continue,
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() { return Ok(()); }
+                        }
                     }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
 
         // Schedule a proactive reconnect 1 hour before the token expires.
         // This avoids the brief disconnect when Centrifugo drops us at expiry.
@@ -236,7 +242,11 @@ async fn run_with_centrifugo<P: RelayPlatform>(
                 let refresh_at = exp.saturating_sub(3600);
                 if refresh_at > now {
                     let secs = refresh_at - now;
-                    log::info!("Token expires in {}h, will refresh in {}h", (exp - now) / 3600, secs / 3600);
+                    log::info!(
+                        "Token expires in {}h, will refresh in {}h",
+                        (exp - now) / 3600,
+                        secs / 3600
+                    );
                     Some(tokio::time::Instant::now() + std::time::Duration::from_secs(secs))
                 } else {
                     log::warn!("Token expiry is already within the refresh window, no proactive refresh scheduled");
@@ -256,7 +266,9 @@ async fn run_with_centrifugo<P: RelayPlatform>(
 
         let ws_shutdown = shutdown_rx.clone();
         let ws_handle = tokio::spawn(async move {
-            client.connect_and_run(command_tx, response_rx, ws_shutdown).await
+            client
+                .connect_and_run(command_tx, response_rx, ws_shutdown)
+                .await
         });
 
         // Give the connection a moment to establish or fail fast
@@ -371,6 +383,9 @@ async fn run_with_centrifugo<P: RelayPlatform>(
                                     }
                                 };
 
+                                if command_response_auth_required(&resp) {
+                                    handle_spotify_auth_required(&*platform_c, &spotify_c).await;
+                                }
                                 persist_if_refreshed(&*platform_c, &spotify_c).await;
                                 if response_tx_c.send(resp).await.is_err() {
                                     log::warn!(
@@ -469,6 +484,10 @@ async fn poll_now_playing<P: RelayPlatform>(
     spotify: &SpotifyClient,
     last_track_uri: &mut Option<String>,
 ) -> Option<NowPlayingInfo> {
+    if spotify.is_auth_required().await {
+        return None;
+    }
+
     match spotify.get_now_playing().await {
         Ok(Some(np)) => {
             let info = np.item.as_ref().map(|track| NowPlayingInfo {
@@ -501,7 +520,11 @@ async fn poll_now_playing<P: RelayPlatform>(
                 platform.persist_refresh_token(&token);
             }
 
-            if changed { info } else { None }
+            if changed {
+                info
+            } else {
+                None
+            }
         }
         Ok(None) => {
             let changed = last_track_uri.is_some();
@@ -527,6 +550,10 @@ async fn poll_now_playing<P: RelayPlatform>(
             }
         }
         Err(e) => {
+            if is_spotify_auth_required(&e) {
+                handle_spotify_auth_required(platform, spotify).await;
+                return None;
+            }
             log::warn!("Failed to get now playing: {}", e);
             platform.update_state(|state| {
                 state.last_error = Some(format!("Spotify: {}", e));
@@ -581,7 +608,10 @@ async fn try_claim_command(config: &RelayConfig, nonce: &str) -> bool {
         Ok(resp) if resp.status().is_success() => true,
         Ok(resp) if resp.status().as_u16() == 409 => false,
         Ok(resp) => {
-            log::warn!("Unexpected claim response status {}, executing anyway", resp.status());
+            log::warn!(
+                "Unexpected claim response status {}, executing anyway",
+                resp.status()
+            );
             true
         }
         Err(e) => {
@@ -594,36 +624,30 @@ async fn try_claim_command(config: &RelayConfig, nonce: &str) -> bool {
 async fn handle_command(spotify: &SpotifyClient, cmd: ServerCommand) -> CommandResponse {
     log::info!("Handling command: {}", command_name(&cmd));
     match cmd {
-        ServerCommand::GetNowPlaying { id, .. } => {
-            match spotify.get_now_playing().await {
-                Ok(np) => CommandResponse {
-                    id,
-                    result: Some(serde_json::to_value(&np).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::GetQueue { id, .. } => {
-            match spotify.get_queue().await {
-                Ok(queue) => CommandResponse {
-                    id,
-                    result: Some(serde_json::to_value(&queue).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::Search { id, query, .. } => {
-            match spotify.search(&query, 20).await {
-                Ok(results) => CommandResponse {
-                    id,
-                    result: Some(serde_json::to_value(&results).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
+        ServerCommand::GetNowPlaying { id, .. } => match spotify.get_now_playing().await {
+            Ok(np) => CommandResponse {
+                id,
+                result: Some(serde_json::to_value(&np).unwrap_or_default()),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::GetQueue { id, .. } => match spotify.get_queue().await {
+            Ok(queue) => CommandResponse {
+                id,
+                result: Some(serde_json::to_value(&queue).unwrap_or_default()),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::Search { id, query, .. } => match spotify.search(&query, 20).await {
+            Ok(results) => CommandResponse {
+                id,
+                result: Some(serde_json::to_value(&results).unwrap_or_default()),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
         ServerCommand::AddToQueue { id, track_uri, .. } => {
             match spotify.add_to_queue(&track_uri).await {
                 Ok(()) => CommandResponse {
@@ -631,67 +655,93 @@ async fn handle_command(spotify: &SpotifyClient, cmd: ServerCommand) -> CommandR
                     result: Some(serde_json::json!({"success": true})),
                     error: None,
                 },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+                Err(e) => spotify_error_response(id, &e),
             }
         }
-        ServerCommand::GetPlaybackState { id, .. } => {
-            match spotify.get_playback_state().await {
-                Ok(state) => CommandResponse {
-                    id,
-                    result: Some(serde_json::to_value(&state).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::GetPlaylistTracks { id, playlist_id, offset, limit, .. } => {
-            match spotify.get_playlist_tracks(&playlist_id, offset.unwrap_or(0), limit.unwrap_or(100)).await {
+        ServerCommand::GetPlaybackState { id, .. } => match spotify.get_playback_state().await {
+            Ok(state) => CommandResponse {
+                id,
+                result: Some(serde_json::to_value(&state).unwrap_or_default()),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::GetPlaylistTracks {
+            id,
+            playlist_id,
+            offset,
+            limit,
+            ..
+        } => {
+            match spotify
+                .get_playlist_tracks(&playlist_id, offset.unwrap_or(0), limit.unwrap_or(100))
+                .await
+            {
                 Ok(tracks) => CommandResponse {
                     id,
                     result: Some(serde_json::to_value(&tracks).unwrap_or_default()),
                     error: None,
                 },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+                Err(e) => spotify_error_response(id, &e),
             }
         }
-        ServerCommand::AddToPlaylist { id, playlist_id, uris, position, .. } => {
-            match spotify.add_to_playlist(&playlist_id, uris, position).await {
-                Ok(snapshot_id) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::RemoveFromPlaylist { id, playlist_id, uris, .. } => {
-            match spotify.remove_from_playlist(&playlist_id, uris).await {
-                Ok(snapshot_id) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::ReplacePlaylist { id, playlist_id, uris, .. } => {
-            match spotify.replace_playlist_tracks(&playlist_id, uris).await {
-                Ok(snapshot_id) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::CreatePlaylist { id, name, description, public, .. } => {
-            match spotify.create_playlist(&name, description.as_deref(), public.unwrap_or(false)).await {
+        ServerCommand::AddToPlaylist {
+            id,
+            playlist_id,
+            uris,
+            position,
+            ..
+        } => match spotify.add_to_playlist(&playlist_id, uris, position).await {
+            Ok(snapshot_id) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::RemoveFromPlaylist {
+            id,
+            playlist_id,
+            uris,
+            ..
+        } => match spotify.remove_from_playlist(&playlist_id, uris).await {
+            Ok(snapshot_id) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::ReplacePlaylist {
+            id,
+            playlist_id,
+            uris,
+            ..
+        } => match spotify.replace_playlist_tracks(&playlist_id, uris).await {
+            Ok(snapshot_id) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({"snapshot_id": snapshot_id})),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::CreatePlaylist {
+            id,
+            name,
+            description,
+            public,
+            ..
+        } => {
+            match spotify
+                .create_playlist(&name, description.as_deref(), public.unwrap_or(false))
+                .await
+            {
                 Ok(playlist) => CommandResponse {
                     id,
                     result: Some(serde_json::to_value(&playlist).unwrap_or_default()),
                     error: None,
                 },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+                Err(e) => spotify_error_response(id, &e),
             }
         }
         ServerCommand::GetArtists { id, artist_ids, .. } => {
@@ -701,79 +751,69 @@ async fn handle_command(spotify: &SpotifyClient, cmd: ServerCommand) -> CommandR
                     result: Some(serde_json::to_value(&artists).unwrap_or_default()),
                     error: None,
                 },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
+                Err(e) => spotify_error_response(id, &e),
             }
         }
-        ServerCommand::GetPlaylistDetails { id, playlist_id, .. } => {
-            match spotify.get_playlist_details(&playlist_id).await {
-                Ok(details) => CommandResponse {
-                    id,
-                    result: Some(serde_json::to_value(&details).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::GetCurrentUser { id, .. } => {
-            match spotify.get_current_user().await {
-                Ok(user) => CommandResponse {
-                    id,
-                    result: Some(serde_json::to_value(&user).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => error_response(id, "spotify_error", &e.to_string()),
-            }
-        }
-        ServerCommand::Pause { id, .. } => {
-            match spotify.pause().await {
-                Ok(()) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({})),
-                    error: None,
-                },
-                Err(e) => playback_error_response(id, &e),
-            }
-        }
-        ServerCommand::Resume { id, .. } => {
-            match spotify.resume().await {
-                Ok(()) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({})),
-                    error: None,
-                },
-                Err(e) => playback_error_response(id, &e),
-            }
-        }
-        ServerCommand::SkipNext { id, .. } => {
-            match spotify.skip_next().await {
-                Ok(()) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({})),
-                    error: None,
-                },
-                Err(e) => playback_error_response(id, &e),
-            }
-        }
-        ServerCommand::SkipPrevious { id, .. } => {
-            match spotify.skip_previous().await {
-                Ok(()) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({})),
-                    error: None,
-                },
-                Err(e) => playback_error_response(id, &e),
-            }
-        }
-        ServerCommand::SetVolume { id, volume_percent, .. } => {
-            match spotify.set_volume(volume_percent).await {
-                Ok(()) => CommandResponse {
-                    id,
-                    result: Some(serde_json::json!({})),
-                    error: None,
-                },
-                Err(e) => playback_error_response(id, &e),
-            }
-        }
+        ServerCommand::GetPlaylistDetails {
+            id, playlist_id, ..
+        } => match spotify.get_playlist_details(&playlist_id).await {
+            Ok(details) => CommandResponse {
+                id,
+                result: Some(serde_json::to_value(&details).unwrap_or_default()),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::GetCurrentUser { id, .. } => match spotify.get_current_user().await {
+            Ok(user) => CommandResponse {
+                id,
+                result: Some(serde_json::to_value(&user).unwrap_or_default()),
+                error: None,
+            },
+            Err(e) => spotify_error_response(id, &e),
+        },
+        ServerCommand::Pause { id, .. } => match spotify.pause().await {
+            Ok(()) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            Err(e) => playback_error_response(id, &e),
+        },
+        ServerCommand::Resume { id, .. } => match spotify.resume().await {
+            Ok(()) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            Err(e) => playback_error_response(id, &e),
+        },
+        ServerCommand::SkipNext { id, .. } => match spotify.skip_next().await {
+            Ok(()) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            Err(e) => playback_error_response(id, &e),
+        },
+        ServerCommand::SkipPrevious { id, .. } => match spotify.skip_previous().await {
+            Ok(()) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            Err(e) => playback_error_response(id, &e),
+        },
+        ServerCommand::SetVolume {
+            id, volume_percent, ..
+        } => match spotify.set_volume(volume_percent).await {
+            Ok(()) => CommandResponse {
+                id,
+                result: Some(serde_json::json!({})),
+                error: None,
+            },
+            Err(e) => playback_error_response(id, &e),
+        },
         ServerCommand::FadeSkip { id, .. } => handle_fade_skip(id, spotify).await,
         ServerCommand::FadePause { id, .. } => handle_fade_pause(id, spotify).await,
     }
@@ -790,17 +830,65 @@ fn error_response(id: String, code: &str, message: &str) -> CommandResponse {
     }
 }
 
+fn spotify_error_response(id: String, e: &SpotifyError) -> CommandResponse {
+    if is_spotify_auth_required(e) {
+        return auth_required_response(id);
+    }
+
+    error_response(id, "spotify_error", &e.to_string())
+}
+
 fn playback_error_response(id: String, e: &SpotifyError) -> CommandResponse {
+    if is_spotify_auth_required(e) {
+        return auth_required_response(id);
+    }
+
     let (code, message) = match e {
-        SpotifyError::Api { status: 403, message } => ("forbidden".to_string(), message.clone()),
+        SpotifyError::Api {
+            status: 403,
+            message,
+        } => ("forbidden".to_string(), message.clone()),
         SpotifyError::Api { status: 404, .. } => (
             "no_device".to_string(),
             "No active Spotify device".to_string(),
         ),
-        SpotifyError::Api { status: 429, message } => ("rate_limited".to_string(), message.clone()),
+        SpotifyError::Api {
+            status: 429,
+            message,
+        } => ("rate_limited".to_string(), message.clone()),
         other => ("spotify_error".to_string(), other.to_string()),
     };
     error_response(id, &code, &message)
+}
+
+fn is_spotify_auth_required(e: &SpotifyError) -> bool {
+    matches!(e, SpotifyError::AuthRequired)
+}
+
+fn auth_required_response(id: String) -> CommandResponse {
+    error_response(
+        id,
+        SPOTIFY_AUTH_REQUIRED_CODE,
+        SPOTIFY_AUTH_REQUIRED_MESSAGE,
+    )
+}
+
+fn command_response_auth_required(response: &CommandResponse) -> bool {
+    response
+        .error
+        .as_ref()
+        .map(|error| error.code.as_str() == SPOTIFY_AUTH_REQUIRED_CODE)
+        .unwrap_or(false)
+}
+
+async fn handle_spotify_auth_required<P: RelayPlatform>(platform: &P, spotify: &SpotifyClient) {
+    spotify.mark_auth_required().await;
+    platform.clear_refresh_token();
+    platform.update_state(|state| {
+        state.spotify_status = ConnectionStatus::Disconnected;
+        state.last_error = Some(SPOTIFY_AUTH_REQUIRED_MESSAGE.to_string());
+    });
+    platform.emit_status();
 }
 
 async fn handle_fade_skip(id: String, spotify: &SpotifyClient) -> CommandResponse {
@@ -931,16 +1019,15 @@ async fn authenticate_spotify<P: RelayPlatform>(
                 return Ok(tokens);
             }
             Err(e) => {
-                let msg = e.to_string();
-                // Detect permanently revoked tokens (Spotify returns "invalid_grant")
-                if msg.contains("invalid_grant") {
+                if e.is_invalid_grant() {
                     platform.clear_refresh_token();
-                    return Err(RelayError::NeedsAuth(
-                        "Spotify session expired. Click Reconnect to sign in again.".into(),
-                    ));
+                    return Err(RelayError::NeedsAuth(SPOTIFY_AUTH_REQUIRED_MESSAGE.into()));
                 }
                 // Other refresh failures (network, server errors) are transient
-                return Err(RelayError::Transient(format!("Token refresh failed: {}", e)));
+                return Err(RelayError::Transient(format!(
+                    "Token refresh failed: {}",
+                    e
+                )));
             }
         }
     }
@@ -948,11 +1035,9 @@ async fn authenticate_spotify<P: RelayPlatform>(
     // No stored refresh token -- first-time setup, requires browser interaction.
     // This is attempted once. If it fails, we stop (no retrying browser OAuth).
     log::info!("No refresh token found, starting OAuth flow");
-    let tokens = oauth::start_oauth_flow(
-        &config.spotify_client_id,
-        &config.redirect_uri,
-        |url| platform.present_auth_url(url),
-    )
+    let tokens = oauth::start_oauth_flow(&config.spotify_client_id, &config.redirect_uri, |url| {
+        platform.present_auth_url(url)
+    })
     .await
     .map_err(|e| RelayError::NeedsAuth(format!("Spotify sign-in was not completed: {}", e)))?;
 
@@ -962,5 +1047,129 @@ async fn authenticate_spotify<P: RelayPlatform>(
 async fn persist_if_refreshed<P: RelayPlatform>(platform: &P, spotify: &SpotifyClient) {
     if let Some(token) = spotify.take_refreshed_token().await {
         platform.persist_refresh_token(&token);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct TestPlatform {
+        refresh_token: Mutex<Option<String>>,
+        state: Mutex<AppState>,
+        emitted: Mutex<u32>,
+        notifications: Mutex<Vec<(String, String)>>,
+        presented_urls: Mutex<Vec<String>>,
+    }
+
+    impl TestPlatform {
+        fn new(refresh_token: Option<String>) -> Self {
+            Self {
+                refresh_token: Mutex::new(refresh_token),
+                state: Mutex::new(AppState::default()),
+                emitted: Mutex::new(0),
+                notifications: Mutex::new(Vec::new()),
+                presented_urls: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl RelayPlatform for TestPlatform {
+        fn persist_refresh_token(&self, token: &str) {
+            *self.refresh_token.lock().unwrap() = Some(token.to_string());
+        }
+
+        fn get_refresh_token(&self) -> Option<String> {
+            self.refresh_token.lock().unwrap().clone()
+        }
+
+        fn clear_refresh_token(&self) {
+            *self.refresh_token.lock().unwrap() = None;
+        }
+
+        fn update_state<F: FnOnce(&mut AppState) + Send>(&self, f: F) {
+            f(&mut self.state.lock().unwrap());
+        }
+
+        fn emit_status(&self) {
+            *self.emitted.lock().unwrap() += 1;
+        }
+
+        fn notify(&self, title: &str, body: &str) {
+            self.notifications
+                .lock()
+                .unwrap()
+                .push((title.to_string(), body.to_string()));
+        }
+
+        fn present_auth_url(&self, url: &str) {
+            self.presented_urls.lock().unwrap().push(url.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn command_auth_required_clears_token_and_returns_protocol_error() {
+        let platform = TestPlatform::new(Some("stored-refresh".to_string()));
+        let spotify = SpotifyClient::new("client".to_string());
+        spotify.mark_auth_required().await;
+
+        let response = handle_command(
+            &spotify,
+            ServerCommand::GetNowPlaying {
+                id: "req-001".to_string(),
+                nonce: None,
+            },
+        )
+        .await;
+        handle_spotify_auth_required(&platform, &spotify).await;
+
+        let error = response.error.unwrap();
+        assert_eq!(response.id, "req-001");
+        assert_eq!(error.code, SPOTIFY_AUTH_REQUIRED_CODE);
+        assert_eq!(error.message, SPOTIFY_AUTH_REQUIRED_MESSAGE);
+        assert!(platform.get_refresh_token().is_none());
+        assert!(spotify.is_auth_required().await);
+
+        let state = platform.state.lock().unwrap();
+        assert_eq!(state.spotify_status, ConnectionStatus::Disconnected);
+        assert_eq!(
+            state.last_error.as_deref(),
+            Some(SPOTIFY_AUTH_REQUIRED_MESSAGE)
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_required_helper_stops_poll_refresh_attempts() {
+        let platform = TestPlatform::new(Some("stored-refresh".to_string()));
+        let spotify = SpotifyClient::new("client".to_string());
+
+        handle_spotify_auth_required(&platform, &spotify).await;
+        let mut last_track_uri = Some("spotify:track:old".to_string());
+        let result = poll_now_playing(&platform, &spotify, &mut last_track_uri).await;
+
+        assert!(result.is_none());
+        assert!(platform.get_refresh_token().is_none());
+        assert!(spotify.is_auth_required().await);
+        assert_eq!(*platform.emitted.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn transient_refresh_failure_stays_generic_and_keeps_token() {
+        let platform = TestPlatform::new(Some("stored-refresh".to_string()));
+        let spotify = SpotifyClient::new("client".to_string());
+
+        let response = spotify_error_response(
+            "req-002".to_string(),
+            &SpotifyError::RefreshFailed("network unavailable".to_string()),
+        );
+
+        let error = response.error.unwrap();
+        assert_eq!(error.code, "spotify_error");
+        assert_eq!(
+            platform.get_refresh_token().as_deref(),
+            Some("stored-refresh")
+        );
+        assert!(!spotify.is_auth_required().await);
     }
 }

@@ -18,6 +18,8 @@ pub enum OAuthError {
     TokenExchangeFailed(String),
     #[error("Token refresh failed: {0}")]
     TokenRefreshFailed(String),
+    #[error("Spotify authorization is required")]
+    InvalidGrant,
     #[error("Callback listener error: {0}")]
     CallbackError(String),
     #[error("Callback timed out (user did not complete authorization)")]
@@ -28,6 +30,12 @@ pub enum OAuthError {
     Http(#[from] reqwest::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl OAuthError {
+    pub fn is_invalid_grant(&self) -> bool {
+        matches!(self, OAuthError::InvalidGrant)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +62,9 @@ pub fn generate_pkce() -> (String, String) {
 fn generate_state() -> String {
     let mut rng = rand::thread_rng();
     let chars: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    (0..32).map(|_| chars[rng.gen_range(0..chars.len())] as char).collect()
+    (0..32)
+        .map(|_| chars[rng.gen_range(0..chars.len())] as char)
+        .collect()
 }
 
 pub fn build_auth_url(client_id: &str, redirect_uri: &str, challenge: &str, state: &str) -> String {
@@ -85,17 +95,20 @@ pub async fn wait_for_callback(expected_state: &str) -> Result<String, OAuthErro
     let n = stream.read(&mut buf).await?;
     let request = String::from_utf8_lossy(&buf[..n]);
 
-    let first_line = request.lines().next().ok_or_else(|| {
-        OAuthError::CallbackError("Empty request".to_string())
-    })?;
+    let first_line = request
+        .lines()
+        .next()
+        .ok_or_else(|| OAuthError::CallbackError("Empty request".to_string()))?;
 
-    let path = first_line.split_whitespace().nth(1).ok_or_else(|| {
-        OAuthError::CallbackError("No path in request".to_string())
-    })?;
+    let path = first_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| OAuthError::CallbackError("No path in request".to_string()))?;
 
-    let query_str = path.split('?').nth(1).ok_or_else(|| {
-        OAuthError::CallbackError("No query string in callback".to_string())
-    })?;
+    let query_str = path
+        .split('?')
+        .nth(1)
+        .ok_or_else(|| OAuthError::CallbackError("No query string in callback".to_string()))?;
 
     let params: std::collections::HashMap<&str, &str> = query_str
         .split('&')
@@ -199,9 +212,17 @@ pub async fn refresh_access_token(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<OAuthTokens, OAuthError> {
+    refresh_access_token_from_url(SPOTIFY_TOKEN_URL, client_id, refresh_token).await
+}
+
+async fn refresh_access_token_from_url(
+    token_url: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<OAuthTokens, OAuthError> {
     let http = reqwest::Client::new();
     let resp = http
-        .post(SPOTIFY_TOKEN_URL)
+        .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
@@ -213,6 +234,9 @@ pub async fn refresh_access_token(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        if spotify_error_code(&body).as_deref() == Some("invalid_grant") {
+            return Err(OAuthError::InvalidGrant);
+        }
         return Err(OAuthError::TokenRefreshFailed(format!(
             "HTTP {} - {}",
             status, body
@@ -239,6 +263,87 @@ pub async fn refresh_access_token(
         refresh_token: new_refresh,
         expires_at: now + body["expires_in"].as_u64().unwrap_or(3600),
     })
+}
+
+fn spotify_error_code(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.as_str())
+                .map(str::to_string)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn token_server(status: &str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let status = status.to_string();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                status,
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        });
+
+        format!("http://{}/api/token", addr)
+    }
+
+    #[tokio::test]
+    async fn refresh_invalid_grant_is_structured() {
+        let url = token_server(
+            "400 Bad Request",
+            r#"{"error":"invalid_grant","error_description":"Refresh token expired"}"#,
+        )
+        .await;
+
+        let err = refresh_access_token_from_url(&url, "client", "expired")
+            .await
+            .unwrap_err();
+
+        assert!(err.is_invalid_grant());
+    }
+
+    #[tokio::test]
+    async fn refresh_transient_failure_is_not_invalid_grant() {
+        let url = token_server("500 Internal Server Error", r#"{"error":"server_error"}"#).await;
+
+        let err = refresh_access_token_from_url(&url, "client", "refresh")
+            .await
+            .unwrap_err();
+
+        assert!(!err.is_invalid_grant());
+        assert!(matches!(err, OAuthError::TokenRefreshFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn refresh_success_uses_returned_refresh_token() {
+        let url = token_server(
+            "200 OK",
+            r#"{"access_token":"access","refresh_token":"fresh-refresh","expires_in":3600}"#,
+        )
+        .await;
+
+        let tokens = refresh_access_token_from_url(&url, "client", "old-refresh")
+            .await
+            .unwrap();
+
+        assert_eq!(tokens.access_token, "access");
+        assert_eq!(tokens.refresh_token, "fresh-refresh");
+    }
 }
 
 /// Run the full OAuth PKCE flow: present auth URL, wait for callback, exchange code.
